@@ -51,6 +51,6 @@
   },
   "devDependencies": {
     "@klopsi/catalogue-snapshot": "file:../../packages/catalogue-snapshot",
-    "fflate": "0.8.2"
+    "fflate": "0.8.3"
   }
 }
