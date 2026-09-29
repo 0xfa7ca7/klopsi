@@ -43,7 +43,7 @@
     "exceljs": "4.4.0",
     "open": "11.0.0",
     "skills": "1.5.19",
-    "undici": "8.7.0",
+    "undici": "8.10.2",
     "unzipit": "1.4.3"
   },
   "optionalDependencies": {
