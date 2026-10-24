@@ -19,12 +19,12 @@
   "dependencies": {
     "@duckdb/node-api": "1.5.4-r.1",
     "@klopsi/domain": "workspace:*",
-    "csv-parse": "7.0.1",
+    "csv-parse": "7.0.3",
     "exceljs": "4.4.0",
     "saxes": "6.0.0",
     "unzipit": "1.4.3"
   },
   "devDependencies": {
-    "fflate": "0.8.2"
+    "fflate": "0.8.3"
   }
 }

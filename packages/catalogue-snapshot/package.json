@@ -22,6 +22,6 @@
     "@klopsi/domain": "workspace:*",
     "@klopsi/provider-opsi": "workspace:*",
     "@klopsi/storage": "workspace:*",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   }
 }

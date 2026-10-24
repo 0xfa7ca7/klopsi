@@ -21,15 +21,15 @@
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:pack"
   },
   "devDependencies": {
-    "@changesets/cli": "2.31.0",
+    "@changesets/cli": "2.31.1",
     "@eslint/js": "10.0.1",
-    "@types/node": "24.13.3",
-    "@vitest/coverage-v8": "4.1.10",
-    "eslint": "10.6.0",
-    "prettier": "3.9.5",
+    "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "4.1.12",
+    "eslint": "10.13.0",
+    "prettier": "3.9.10",
     "tsup": "8.5.1",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.63.0",
-    "vitest": "4.1.10"
+    "typescript-eslint": "8.72.0",
+    "vitest": "4.1.12"
   }
 }
