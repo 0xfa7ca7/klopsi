@@ -17,6 +17,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "string-width": "8.2.2"
+    "string-width": "8.3.0"
   }
 }
