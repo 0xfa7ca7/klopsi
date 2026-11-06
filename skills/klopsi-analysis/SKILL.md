@@ -26,7 +26,8 @@ Profile columns, analyze tabular inputs with bounded read-only SQL, or convert s
 ### Profile columns before querying
 
 - Run `klopsi profile <input> --json` to get one row per staged column with `type`, `count`, `nullCount`, `nullPercent`, `distinctApprox`, `min`, `max`, and numeric `mean` and `stddev`.
-- Use the reported column names and DuckDB types to write correctly quoted SQL; `min` and `max` are text so large integers stay exact, and `distinctApprox` is an estimate.
+- Use the reported column names and DuckDB types to write correctly quoted SQL; `min` and `max` are text so large integers stay exact, capped at 256 characters with `minTruncated`/`maxTruncated` flags, and `distinctApprox` is an estimate.
+- For FLOAT and DOUBLE columns, `mean` and `stddev` exclude NaN, infinities, and magnitudes of 1e150 or more; query those values directly when they matter.
 - Profile shares query staging, cache, and time, memory, and thread bounds; it accepts the same `--sheet`, `--entry`, and `--record-path` selectors and fails with exit 7 on timeout or cancellation.
 
 ### Run bounded read-only SQL

@@ -637,7 +637,9 @@ export interface ColumnProfile {
   readonly nullPercent: number | null;
   readonly distinctApprox: number;
   readonly min: string | null;
+  readonly minTruncated: boolean;
   readonly max: string | null;
+  readonly maxTruncated: boolean;
   readonly mean: number | null;
   readonly stddev: number | null;
 }

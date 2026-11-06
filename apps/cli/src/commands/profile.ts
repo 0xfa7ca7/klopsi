@@ -49,6 +49,10 @@ export function registerProfileCommand(
         if (global.quiet !== true)
           for (const warning of result.warnings)
             context.io.stderr.write(`warning [${warning.code}]: ${warning.message}\n`);
+        if (global.quiet !== true && context.configuration?.output === "human")
+          context.io.stderr.write(
+            `${result.rowCount} ${result.rowCount === 1 ? "row" : "rows"}, ${result.columnCount} ${result.columnCount === 1 ? "column" : "columns"}, ${result.source}\n`,
+          );
         context.renderer?.write(result.columns, {
           source: result.source,
           columnCount: result.columnCount,

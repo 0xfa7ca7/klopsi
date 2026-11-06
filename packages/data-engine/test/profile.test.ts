@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DuckDbQueryRunner } from "../src/query.js";
 import { buildProfileBatches, profileStagedDatabase } from "../src/profile.js";
@@ -32,6 +33,20 @@ async function staged(input: string): Promise<string> {
   return databasePath;
 }
 
+async function table(sql: string): Promise<string> {
+  const databasePath = join(directory, "data.duckdb");
+  const instance = await DuckDBInstance.create(databasePath);
+  const connection = await instance.connect();
+  try {
+    await connection.run(`CREATE TABLE data AS ${sql}`);
+    await connection.run("CHECKPOINT");
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
+  return databasePath;
+}
+
 function profile(databasePath: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}) {
   return profileStagedDatabase(new DuckDbQueryRunner({ workerPath }), {
     databasePath,
@@ -53,7 +68,9 @@ describe("profileStagedDatabase", () => {
       nullPercent: 0,
       distinctApprox: 3,
       min: "1",
+      minTruncated: false,
       max: "3",
+      maxTruncated: false,
       mean: 2,
       stddev: 1,
     });
@@ -172,6 +189,131 @@ describe("profileStagedDatabase", () => {
         })(),
       }),
     ).rejects.toMatchObject({ code: "QUERY_TIMEOUT", exitCode: 7 });
+  });
+});
+
+describe("profileStagedDatabase edge cases", () => {
+  it("excludes NaN and infinities from mean and stddev of float columns", async () => {
+    const input = join(directory, "nan.csv");
+    await writeFile(input, "x,y\n1.5,a\nNaN,b\n2.5,c\ninf,d\n");
+    const result = await profile(await staged(input));
+    expect(result.columns[0]).toMatchObject({
+      column: "x",
+      type: "DOUBLE",
+      count: 4,
+      mean: 2,
+      stddev: Math.SQRT1_2,
+    });
+  });
+
+  it("does not fail on float magnitudes whose squares overflow", async () => {
+    const result = await profile(
+      await table("SELECT * FROM (VALUES (1e200::DOUBLE), (-1e300::DOUBLE), (3::DOUBLE)) t(x)"),
+    );
+    expect(result.columns[0]).toMatchObject({ count: 3, min: "-1e+300", max: "1e+200" });
+    expect(result.columns[0]?.mean).toBeTypeOf("number");
+  });
+
+  it("truncates long min and max text to 256 characters", async () => {
+    const input = join(directory, "long.csv");
+    await writeFile(input, `id,text\n1,${"b".repeat(1_100_000)}\n2,${"a".repeat(300)}\n`);
+    const result = await profile(await staged(input));
+    expect(result.columns[1]).toMatchObject({
+      min: "a".repeat(256),
+      minTruncated: true,
+      max: "b".repeat(256),
+      maxTruncated: true,
+    });
+    expect(result.columns[0]).toMatchObject({ minTruncated: false, maxTruncated: false });
+  });
+
+  it("profiles a table wider than one batch end to end", async () => {
+    const projections = Array.from({ length: 450 }, (_, index) => `${index} AS "col ${index}"`);
+    const result = await profile(await table(`SELECT ${projections.join(", ")}`));
+    expect(result.rowCount).toBe(1);
+    expect(result.columns).toHaveLength(450);
+    expect(result.columns[449]).toMatchObject({ column: "col 449", min: "449", count: 1 });
+  });
+
+  it("reports all-null columns and single-row stddev as null", async () => {
+    const result = await profile(await table("SELECT NULL::INTEGER AS empty, 7 AS one"));
+    expect(result.columns[0]).toMatchObject({
+      count: 0,
+      nullCount: 1,
+      nullPercent: 100,
+      distinctApprox: 0,
+      min: null,
+      max: null,
+      mean: null,
+      stddev: null,
+    });
+    expect(result.columns[1]).toMatchObject({ count: 1, mean: 7, stddev: null });
+  });
+
+  it("profiles DECIMAL and HUGEINT columns exactly", async () => {
+    const result = await profile(
+      await table(
+        "SELECT * FROM (VALUES (1.25::DECIMAL(18,2), 170141183460469231731687303715884105727::HUGEINT), (2.75::DECIMAL(18,2), -5::HUGEINT)) t(d, h)",
+      ),
+    );
+    expect(result.columns[0]).toMatchObject({
+      type: "DECIMAL(18,2)",
+      min: "1.25",
+      max: "2.75",
+      mean: 2,
+    });
+    expect(result.columns[1]).toMatchObject({
+      type: "HUGEINT",
+      min: "-5",
+      max: "170141183460469231731687303715884105727",
+    });
+  });
+
+  it("renders TIMESTAMPTZ min and max in UTC regardless of host timezone", async () => {
+    const databasePath = await table(
+      "SELECT * FROM (VALUES ('2024-01-01 10:00:00+02'::TIMESTAMPTZ), ('2024-06-30 23:30:00-01'::TIMESTAMPTZ)) t(ts)",
+    );
+    const previous = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const result = await profile(databasePath);
+      expect(result.columns[0]).toMatchObject({
+        type: "TIMESTAMP WITH TIME ZONE",
+        min: "2024-01-01 08:00:00+00",
+        max: "2024-07-01 00:30:00+00",
+      });
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
+  it("clamps the distinct estimate to the non-null count", async () => {
+    const result = await profile(await table("SELECT range::VARCHAR AS v FROM range(5000)"));
+    expect(result.columns[0]?.distinctApprox).toBeLessThanOrEqual(5000);
+  });
+
+  it("counts rows when the table has no columns to batch", async () => {
+    const calls: string[] = [];
+    const result = await profileStagedDatabase(
+      {
+        executePrepared: async (options) => {
+          calls.push(options.sql);
+          return calls.length === 1
+            ? { columns: [], rows: [], returnedCount: 0, truncated: false, sql: options.sql }
+            : {
+                columns: ["row_count"],
+                rows: [{ row_count: "4" }],
+                returnedCount: 1,
+                truncated: false,
+                sql: options.sql,
+              };
+        },
+      },
+      { databasePath: "unused", invocationDirectory: directory },
+    );
+    expect(result).toEqual({ rowCount: 4, columns: [] });
+    expect(calls[1]).toBe("SELECT count(*) AS row_count FROM data");
   });
 });
 

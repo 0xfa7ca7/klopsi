@@ -102,8 +102,15 @@ describe("profile CLI", () => {
     expect(table).toMatchObject({ exitCode: 0 });
     expect(table.stdout).toMatch(/column/u);
     expect(table.stdout).toMatch(/mesto/u);
+    expect(table.stdout).not.toContain(input);
+    expect(table.stderr).toBe(`2 rows, 2 columns, ${input}\n`);
+    await expect(cli(["profile", input, "--quiet"])).resolves.toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    });
     const csv = await cli(["profile", input, "--csv", "--fields", "column,type,count"]);
     expect(csv.stdout).toBe("column,type,count\nid,BIGINT,2\nmesto,VARCHAR,2\n");
+    expect(csv.stderr).toBe("");
   });
 
   it("maps unsupported input to exit 5 and an exhausted deadline to exit 7", async () => {

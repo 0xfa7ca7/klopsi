@@ -13,15 +13,25 @@ export interface ColumnProfile {
   readonly nullCount: number;
   /** Percentage of null values rounded to two decimals; `null` for an empty table. */
   readonly nullPercent: number | null;
-  /** HyperLogLog estimate of distinct non-null values. */
+  /** HyperLogLog estimate of distinct non-null values, never larger than `count`. */
   readonly distinctApprox: number;
-  /** Smallest value rendered as text; `null` for nested types or when every value is null. */
+  /**
+   * Smallest value rendered as text and capped at 256 characters; `null` for
+   * nested types or when every value is null. TIMESTAMPTZ values are in UTC.
+   */
   readonly min: string | null;
-  /** Largest value rendered as text; `null` for nested types or when every value is null. */
+  /** Whether `min` was cut to {@link PROFILE_TEXT_LIMIT} characters. */
+  readonly minTruncated: boolean;
+  /** Largest value, rendered like `min`. */
   readonly max: string | null;
-  /** Arithmetic mean of numeric columns; `null` otherwise. */
+  /** Whether `max` was cut to {@link PROFILE_TEXT_LIMIT} characters. */
+  readonly maxTruncated: boolean;
+  /**
+   * Arithmetic mean of numeric columns; `null` otherwise. For FLOAT and DOUBLE
+   * columns, NaN, infinities, and magnitudes of 1e150 or more are excluded.
+   */
   readonly mean: number | null;
-  /** Sample standard deviation of numeric columns; `null` otherwise. */
+  /** Sample standard deviation of numeric columns over the same values as `mean`. */
   readonly stddev: number | null;
 }
 
@@ -61,7 +71,16 @@ export const PROFILE_SCHEMA_SQL =
 
 const NUMERIC_TYPE =
   /^(?:TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT|UHUGEINT|FLOAT|DOUBLE|DECIMAL\(\d+,\s*\d+\))$/u;
+const FLOAT_TYPE = /^(?:FLOAT|DOUBLE)$/u;
 const NESTED_TYPE = /^(?:STRUCT|MAP|UNION)\(|\]$/u;
+const TIMESTAMPTZ_TYPE = /^TIMESTAMP WITH TIME ZONE$/u;
+
+/** Maximum characters of `min` and `max` text returned per column. */
+export const PROFILE_TEXT_LIMIT = 256;
+/** Float magnitudes at or above this bound are excluded so variance cannot overflow. */
+const FLOAT_MAGNITUDE_LIMIT = "1e150";
+// KLOPSI-owned statement used when the staged table has no columns to batch.
+const ROW_COUNT_SQL = "SELECT count(*) AS row_count FROM data";
 
 function sqlTooLarge(): KlopsiError {
   return new KlopsiError({
@@ -95,16 +114,34 @@ function malformed(message: string): KlopsiError {
   });
 }
 
+function extreme(column: ProfileColumn, operation: "min" | "max", alias: string): string {
+  // TIMESTAMPTZ text otherwise depends on the worker's host timezone.
+  return TIMESTAMPTZ_TYPE.test(column.type)
+    ? `(CAST(timezone('UTC', ${operation}(${alias})) AS VARCHAR) || '+00')`
+    : `CAST(${operation}(${alias}) AS VARCHAR)`;
+}
+
 function aggregate(column: ProfileColumn, alias: string, output: string): string {
   const nested = NESTED_TYPE.test(column.type);
   const numeric = NUMERIC_TYPE.test(column.type);
+  const value = `CAST(${alias} AS DOUBLE)`;
+  const filter = FLOAT_TYPE.test(column.type)
+    ? ` FILTER (WHERE isfinite(${value}) AND abs(${value}) < ${FLOAT_MAGNITUDE_LIMIT})`
+    : "";
+  const text = (key: string, operation: "min" | "max") =>
+    nested
+      ? [`'${key}': NULL::VARCHAR`, `'${key}t': false`]
+      : [
+          `'${key}': left(${extreme(column, operation, alias)}, ${PROFILE_TEXT_LIMIT})`,
+          `'${key}t': coalesce(length(${extreme(column, operation, alias)}) > ${PROFILE_TEXT_LIMIT}, false)`,
+        ];
   return [
     `{'n': count(${alias})`,
     `'d': approx_count_distinct(${alias})`,
-    nested ? "'mn': NULL::VARCHAR" : `'mn': CAST(min(${alias}) AS VARCHAR)`,
-    nested ? "'mx': NULL::VARCHAR" : `'mx': CAST(max(${alias}) AS VARCHAR)`,
-    numeric ? `'av': avg(CAST(${alias} AS DOUBLE))` : "'av': NULL::DOUBLE",
-    numeric ? `'sd': stddev_samp(CAST(${alias} AS DOUBLE))` : "'sd': NULL::DOUBLE",
+    ...text("mn", "min"),
+    ...text("mx", "max"),
+    numeric ? `'av': avg(${value})${filter}` : "'av': NULL::DOUBLE",
+    numeric ? `'sd': stddev_samp(${value})${filter}` : "'sd': NULL::DOUBLE",
   ]
     .join(", ")
     .concat(`} AS ${output}`);
@@ -185,9 +222,11 @@ function statistics(column: ProfileColumn, raw: unknown, rowCount: number): Colu
     count,
     nullCount,
     nullPercent: rowCount === 0 ? null : Math.round((nullCount / rowCount) * 10_000) / 100,
-    distinctApprox: integer(value.d, "distinct count"),
+    distinctApprox: Math.min(integer(value.d, "distinct count"), count),
     min: text(value.mn),
+    minTruncated: value.mnt === true,
     max: text(value.mx),
+    maxTruncated: value.mxt === true,
     mean: finite(value.av),
     stddev: finite(value.sd),
   };
@@ -238,8 +277,13 @@ export async function profileStagedDatabase(
     });
   const columns = schemaColumns(schema.rows);
   const profiles: ColumnProfile[] = [];
+  const batches = buildProfileBatches(columns);
+  if (batches.length === 0) {
+    const counted = await run(ROW_COUNT_SQL, 1, 1);
+    return { rowCount: integer(counted.rows[0]?.row_count, "row count"), columns: [] };
+  }
   let rowCount = 0;
-  for (const batch of buildProfileBatches(columns)) {
+  for (const batch of batches) {
     const result = await run(batch.sql, 1, batch.columns.length + 1);
     const row = result.rows[0];
     if (row === undefined) throw malformed("The profile query returned no rows.");

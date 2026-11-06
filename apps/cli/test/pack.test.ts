@@ -225,7 +225,7 @@ const operations = [
 ];
 const columnProfile: ColumnProfile = {
   column: 'count', type: 'BIGINT', count: 1, nullCount: 0, nullPercent: 0, distinctApprox: 1,
-  min: '42', max: '42', mean: 42, stddev: null,
+  min: '42', minTruncated: false, max: '42', maxTruncated: false, mean: 42, stddev: null,
 };
 const profileOptions: ProfileServiceOptions = { sheet: 'Data', allowPrivateNetwork: false };
 void [columnProfile.min, profileOptions.sheet];

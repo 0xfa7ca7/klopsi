@@ -194,8 +194,15 @@ export async function executeQueryWorker(request: QueryWorkerRequest): Promise<Q
   return queryResult;
 }
 
-function send(message: QueryWorkerMessage): void {
-  process.send?.(message);
+/** Resolve only after the IPC channel accepted the message, so disconnect cannot drop it. */
+function send(message: QueryWorkerMessage): Promise<void> {
+  return new Promise((resolve) => {
+    if (process.send === undefined) {
+      resolve();
+      return;
+    }
+    process.send(message, undefined, {}, () => resolve());
+  });
 }
 
 export function startQueryWorker(): void {
