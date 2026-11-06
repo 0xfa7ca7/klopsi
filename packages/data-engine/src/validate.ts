@@ -658,6 +658,7 @@ export async function validateData(
           "SHEET_REQUIRED",
           "SHEET_NOT_FOUND",
           "XLSX_SHARED_STRINGS_TOO_LARGE",
+          "XLSX_LIMIT_EXCEEDED",
           "DOWNLOAD_ONLY_FORMAT",
           "UNSUPPORTED_FORMAT",
           "VALIDATION_RECORD_LIMIT",
@@ -691,6 +692,7 @@ export async function validateData(
         "SHEET_REQUIRED",
         "SHEET_NOT_FOUND",
         "XLSX_SHARED_STRINGS_TOO_LARGE",
+        "XLSX_LIMIT_EXCEEDED",
         "DOWNLOAD_ONLY_FORMAT",
         "UNSUPPORTED_FORMAT",
       ].includes(error.code)

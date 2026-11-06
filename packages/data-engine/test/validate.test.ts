@@ -2,8 +2,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DataEngine } from "../src/index.js";
-import ExcelJS from "exceljs";
+import { DataEngine, writeXlsx } from "../src/index.js";
+import { rows as fixtureRows, writeFixtureXlsx } from "./xlsx-fixture.js";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { EXIT_CODES, KlopsiError } from "@klopsi/domain";
 
@@ -274,18 +274,16 @@ DATA=1 ".";`,
     const directory = await mkdtemp(join(tmpdir(), "klopsi-xlsx-validation-"));
     temporary.push(directory);
     const path = join(directory, "late.xlsx");
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Rows");
-    sheet.addRow(["id", "date", "value", "mostly"]);
+    const sheetRows: (string | number | null)[][] = [["id", "date", "value", "mostly"]];
     for (let id = 0; id < 1_100; id += 1)
-      sheet.addRow([
+      sheetRows.push([
         id,
         id === 525 ? "2026-99-99" : "2026-01-01",
         id === 525 ? "=2+2" : id === 526 ? "3" : "safe",
         id < 500 ? "present" : null,
       ]);
-    sheet.addRow([525, "2026-99-99", "=2+2", null]);
-    await workbook.xlsx.writeFile(path);
+    sheetRows.push([525, "2026-99-99", "=2+2", null]);
+    await writeXlsx(path, [{ name: "Rows", rows: sheetRows }]);
 
     const codes = (await engine.validate(path, { sheet: "Rows" })).issues.map(
       (candidate) => candidate.code,
@@ -421,12 +419,16 @@ DATA=1 ".";`,
     const directory = await mkdtemp(join(tmpdir(), "klopsi-xlsx-trailing-nulls-"));
     temporary.push(directory);
     const path = join(directory, "trailing-nulls.xlsx");
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Rows");
-    sheet.addRow(["id", "note"]);
-    sheet.addRow([1, null]);
-    sheet.addRow([2, "present"]);
-    await workbook.xlsx.writeFile(path);
+    await writeXlsx(path, [
+      {
+        name: "Rows",
+        rows: [
+          ["id", "note"],
+          [1, null],
+          [2, "present"],
+        ],
+      },
+    ]);
 
     const result = await engine.validate(path, { sheet: "Rows" });
 
@@ -446,13 +448,16 @@ DATA=1 ".";`,
     const directory = await mkdtemp(join(tmpdir(), "klopsi-xlsx-headers-"));
     temporary.push(directory);
     const path = join(directory, "headers.xlsx");
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Rows");
-    sheet.addRow(["a", "a", ""]);
-    sheet.addRow([1, 2, 3, 4]);
-    const wide = workbook.addWorksheet("Wide");
-    wide.addRow(["a", "b"]);
-    await workbook.xlsx.writeFile(path);
+    await writeXlsx(path, [
+      {
+        name: "Rows",
+        rows: [
+          ["a", "a", ""],
+          [1, 2, 3, 4],
+        ],
+      },
+      { name: "Wide", rows: [["a", "b"]] },
+    ]);
     const result = await engine.validate(path, { sheet: "Rows" });
     expect(result.issues.map((candidate) => candidate.code)).toEqual(
       expect.arrayContaining(["DUPLICATE_HEADER", "EMPTY_HEADER", "INCONSISTENT_COLUMN_COUNT"]),
@@ -466,10 +471,9 @@ DATA=1 ".";`,
     const directory = await mkdtemp(join(tmpdir(), "klopsi-xlsx-header-budget-"));
     temporary.push(directory);
     const path = join(directory, "header-budget.xlsx");
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Rows");
-    sheet.addRow([{ formula: '"danger"', result: "danger" }, "x".repeat(200)]);
-    await workbook.xlsx.writeFile(path);
+    await writeFixtureXlsx(path, {
+      sheets: [{ name: "Rows", rows: fixtureRows([[{ formula: '"danger"' }, "x".repeat(200)]]) }],
+    });
     await expect(
       new DataEngine({ validationMaxRecordBytes: 40 }).validate(path, { sheet: "Rows" }),
     ).rejects.toMatchObject({ code: "VALIDATION_RECORD_TOO_LARGE", exitCode: 5 });

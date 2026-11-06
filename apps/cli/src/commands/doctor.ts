@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EXIT_CODES, KlopsiError } from "@klopsi/domain";
 import type { KlopsiClient } from "@klopsi/core";
-import { DataEngine, SUPPORTED_DATA_FORMATS, type SupportedDataFormat } from "@klopsi/data-engine";
+import {
+  DataEngine,
+  SUPPORTED_DATA_FORMATS,
+  writeXlsx,
+  type SupportedDataFormat,
+} from "@klopsi/data-engine";
 import type { Command } from "commander";
 import { manifestCommand } from "../command-manifest.js";
 import type { CliContext } from "../context.js";
@@ -84,12 +89,7 @@ async function createBasicFormatFixtures(
     writeFile(paths.json, '[{"answer":42}]\n'),
     writeFile(paths.ndjson, '{"answer":42}\n'),
   ]);
-  const { default: ExcelJS } = await import("exceljs");
-  const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet("Data");
-  worksheet.addRow(["answer"]);
-  worksheet.addRow([42]);
-  await workbook.xlsx.writeFile(paths.xlsx);
+  await writeXlsx(paths.xlsx, [{ name: "Data", rows: [["answer"], [42]] }]);
   return paths;
 }
 

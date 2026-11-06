@@ -10,5 +10,5 @@ export default defineConfig({
   clean: true,
   splitting: false,
   noExternal: [/^@klopsi\//],
-  external: ["undici", "@duckdb/node-api", "csv-parse", "exceljs", "unzipit"],
+  external: ["undici", "@duckdb/node-api", "csv-parse", "unzipit"],
 });
