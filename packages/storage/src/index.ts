@@ -26,3 +26,12 @@ export type {
   DerivedArtifactPublication,
   DerivedArtifactVerification,
 } from "./derived-artifact-cache.js";
+export {
+  DEFAULT_DOWNLOAD_RETRIES,
+  DEFAULT_RETRY_BASE_DELAY_MS,
+  DEFAULT_RETRY_MAX_DELAY_MS,
+  isRetryableHttpStatus,
+  parseRetryAfter,
+} from "./retry.js";
+export type { DownloadRetryEvent, DownloadRetryOptions, RetrySleep } from "./retry.js";
+export type { DownloaderOptions } from "./download.js";

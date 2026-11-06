@@ -12,6 +12,7 @@ export interface GlobalOptions {
   readonly cacheDir?: string;
   readonly downloadDir?: string;
   readonly httpTimeoutMs?: number;
+  readonly httpRetries?: number;
   readonly maxDownloadBytes?: number;
   readonly previewRowLimit?: number;
   readonly queryRowLimit?: number;
@@ -68,6 +69,13 @@ function positiveInteger(argv: readonly string[], name: string): number | undefi
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function nonnegativeInteger(argv: readonly string[], name: string): number | undefined {
+  const value = optionValue(argv, name);
+  if (value === undefined || !/^\d+$/u.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
 export function requestedOutputFormat(argv: readonly string[]): OutputFormat | undefined {
   for (const format of STRUCTURED_FORMATS) {
     if (argv.includes(`--${format}`)) return format;
@@ -85,6 +93,7 @@ export function cliConfigurationFromArgv(argv: readonly string[]): CliConfigurat
   const cacheDir = optionValue(argv, "--cache-dir");
   const downloadDir = optionValue(argv, "--download-dir");
   const httpTimeoutMs = positiveInteger(argv, "--http-timeout-ms");
+  const httpRetries = nonnegativeInteger(argv, "--http-retries");
   const maxDownloadBytes = positiveInteger(argv, "--max-download-bytes");
   const previewRowLimit = positiveInteger(argv, "--preview-row-limit");
   const queryRowLimit = positiveInteger(argv, "--query-row-limit");
@@ -98,6 +107,7 @@ export function cliConfigurationFromArgv(argv: readonly string[]): CliConfigurat
     ...(cacheDir === undefined ? {} : { cacheDir }),
     ...(downloadDir === undefined ? {} : { downloadDir }),
     ...(httpTimeoutMs === undefined ? {} : { httpTimeoutMs }),
+    ...(httpRetries === undefined ? {} : { httpRetries }),
     ...(maxDownloadBytes === undefined ? {} : { maxDownloadBytes }),
     ...(previewRowLimit === undefined ? {} : { previewRowLimit }),
     ...(queryRowLimit === undefined ? {} : { queryRowLimit }),

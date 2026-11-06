@@ -2,8 +2,8 @@ import { Command } from "commander";
 import { KlopsiClient, ProviderRegistry } from "@klopsi/core";
 import { OpsiProvider, OpsiTransport, RequestScheduler } from "@klopsi/provider-opsi";
 import { LocalProvider } from "@klopsi/provider-local";
-import { ContentCache, ProvenanceStore } from "@klopsi/storage";
-import type { DerivedArtifactPolicy } from "@klopsi/storage";
+import { ContentCache, Downloader, ProvenanceStore, SafeDispatcherFactory } from "@klopsi/storage";
+import type { DerivedArtifactPolicy, DownloadRetryEvent } from "@klopsi/storage";
 import { parseStorageBytes } from "@klopsi/config";
 import {
   CatalogueSnapshotClient,
@@ -54,10 +54,19 @@ function duckdbCachePolicy(context: CliContext): DerivedArtifactPolicy {
   };
 }
 
+export function formatRetryWarning(event: DownloadRetryEvent): string {
+  const seconds = (event.delayMs / 1_000).toFixed(1);
+  return (
+    `warning [DOWNLOAD_RETRY]: ${event.method} ${event.origin} failed with ${event.reason}; ` +
+    `retrying in ${seconds} s (attempt ${event.attempt + 1} of ${event.maxAttempts})\n`
+  );
+}
+
 function createClient(
   context: CliContext,
   cache: ContentCache,
   duckdbCache: DerivedArtifactPolicy,
+  quiet: () => boolean,
 ): KlopsiClient {
   const intervalMs = requestInterval(context.io.env?.OPSI_REQUEST_INTERVAL_MS);
   const configuration = context.configuration;
@@ -86,9 +95,17 @@ function createClient(
     cwd: context.io.cwd ?? process.cwd(),
     downloads: {
       downloadDir: configuration?.paths.downloadDir ?? context.io.cwd ?? process.cwd(),
+      downloader: new Downloader(new SafeDispatcherFactory(), {
+        onRetry: (event) => {
+          if (!quiet()) context.io.stderr.write(formatRetryWarning(event));
+        },
+      }),
       limits: {
         maxBytes: configuration?.http.maxDownloadBytes ?? 2 * 1024 * 1024 * 1024,
         timeoutMs: configuration?.http.timeoutMs ?? 30_000,
+        ...(configuration?.http.retries === undefined
+          ? {}
+          : { retries: configuration.http.retries }),
       },
       provenance: new ProvenanceStore(),
       cache,
@@ -143,7 +160,12 @@ export function createProgram(
   const cache = new ContentCache(context.configuration?.paths.cacheDir ?? ".klopsi-cache", {
     maxObjectBytes: Math.max(2 * 1024 * 1024 * 1024, duckdbCache.maxBytes),
   });
-  const client = createClient(context, cache, duckdbCache);
+  const client = createClient(
+    context,
+    cache,
+    duckdbCache,
+    () => (program.opts() as { readonly quiet?: boolean }).quiet === true,
+  );
   const catalogue =
     dependencies.catalogue ??
     new CatalogueSnapshotClient({

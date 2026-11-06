@@ -212,7 +212,12 @@ export class DownloadService {
       const conditional =
         cachedRecord === undefined || Object.keys(conditionalHeaders).length === 0
           ? undefined
-          : await this.downloader.probe({ ...commonRequest, headers: conditionalHeaders });
+          : // The GET below has its own retry budget; the revalidation probe does not stack one.
+            await this.downloader.probe({
+              ...commonRequest,
+              limits: { ...this.options.limits, retries: 0 },
+              headers: conditionalHeaders,
+            });
       if (
         conditional?.status === 304 &&
         this.options.cache !== undefined &&

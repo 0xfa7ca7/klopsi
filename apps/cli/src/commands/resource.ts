@@ -30,12 +30,11 @@ export function registerResourceCommand(
   manifestCommand(program, "resource headers").action(
     async (id: string, options: { allowInsecureHttp?: boolean; allowPrivateNetwork?: boolean }) => {
       if (client.downloads === undefined) throw new Error("Download service unavailable");
-      context.renderer?.write(
-        await client.downloads.headers(resourceId(id), {
-          allowInsecureHttp: options.allowInsecureHttp ?? false,
-          allowPrivateNetwork: options.allowPrivateNetwork ?? false,
-        }),
-      );
+      const { attempts, ...probe } = await client.downloads.headers(resourceId(id), {
+        allowInsecureHttp: options.allowInsecureHttp ?? false,
+        allowPrivateNetwork: options.allowPrivateNetwork ?? false,
+      });
+      context.renderer?.write(probe, attempts === undefined ? {} : { attempts });
     },
   );
 }

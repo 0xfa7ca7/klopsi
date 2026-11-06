@@ -17,6 +17,7 @@ export interface CliConfigurationOptions {
   readonly cacheDir?: string;
   readonly downloadDir?: string;
   readonly httpTimeoutMs?: number;
+  readonly httpRetries?: number;
   readonly maxDownloadBytes?: number;
   readonly previewRowLimit?: number;
   readonly queryRowLimit?: number;
@@ -71,6 +72,11 @@ function positiveInteger(value: string | undefined): number | string | undefined
   return /^\d+$/u.test(value) && Number(value) > 0 ? Number(value) : value;
 }
 
+function nonnegativeInteger(value: string | undefined): number | string | undefined {
+  if (value === undefined) return undefined;
+  return /^\d+$/u.test(value) ? Number(value) : value;
+}
+
 function booleanValue(value: string | undefined): boolean | string | undefined {
   if (value === undefined) return undefined;
   if (value === "1" || value.toLowerCase() === "true") return true;
@@ -90,6 +96,7 @@ function environmentSource(env: NodeJS.ProcessEnv): MutableRecord {
     http: {
       timeoutMs: positiveInteger(env.KLOPSI_HTTP_TIMEOUT_MS),
       maxDownloadBytes: positiveInteger(env.KLOPSI_MAX_DOWNLOAD_BYTES),
+      retries: nonnegativeInteger(env.KLOPSI_HTTP_RETRIES),
     },
     query: {
       rowLimit: positiveInteger(env.KLOPSI_QUERY_ROW_LIMIT),
@@ -116,6 +123,7 @@ function cliSource(cli: CliConfigurationOptions): MutableRecord {
     http: {
       timeoutMs: cli.httpTimeoutMs,
       maxDownloadBytes: cli.maxDownloadBytes,
+      retries: cli.httpRetries,
     },
     preview: { rowLimit: cli.previewRowLimit },
     query: { rowLimit: cli.queryRowLimit, timeoutMs: cli.queryTimeoutMs },
@@ -140,7 +148,7 @@ export async function loadConfiguration(
     locale: "sl-SI",
     offline: false,
     paths: { cacheDir: paths.cacheDir, downloadDir: paths.downloadDir },
-    http: { timeoutMs: 30_000, maxDownloadBytes: 2 * 1024 * 1024 * 1024 },
+    http: { timeoutMs: 30_000, maxDownloadBytes: 2 * 1024 * 1024 * 1024, retries: 2 },
     preview: { rowLimit: 20 },
     query: { rowLimit: 1_000, timeoutMs: 30_000 },
     duckdb: {
