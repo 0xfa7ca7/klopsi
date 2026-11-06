@@ -4,9 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { ProvenanceStore } from "@klopsi/storage";
-import ExcelJS from "exceljs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DataEngine, type SupportedDataFormat } from "../src/index.js";
+import { DataEngine, writeXlsx, type SupportedDataFormat } from "../src/index.js";
 
 const columns = ["občina", "vrednost", "opomba", "aktivna"] as const;
 const rows = [
@@ -42,11 +41,9 @@ async function createInputs(): Promise<Readonly<Record<SupportedDataFormat, stri
   await writeFile(json, JSON.stringify(rows));
   await writeFile(ndjson, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
 
-  const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet("Data");
-  worksheet.addRow(columns);
-  for (const row of rows) worksheet.addRow(columns.map((column) => row[column]));
-  await workbook.xlsx.writeFile(xlsx);
+  await writeXlsx(xlsx, [
+    { name: "Data", rows: [columns, ...rows.map((row) => columns.map((column) => row[column]))] },
+  ]);
 
   const instance = await DuckDBInstance.create(":memory:");
   const connection = await instance.connect();

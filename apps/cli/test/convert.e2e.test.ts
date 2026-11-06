@@ -3,9 +3,8 @@ import { once } from "node:events";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import ExcelJS from "exceljs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DataEngine } from "@klopsi/data-engine";
+import { DataEngine, writeXlsx } from "@klopsi/data-engine";
 
 interface CliResult {
   readonly exitCode: number;
@@ -21,12 +20,16 @@ beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "klopsi-convert-e2e-"));
   home = await realpath(home);
   input = join(home, "input.xlsx");
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet("Data");
-  sheet.addRow(["občina", "vrednost", "opomba"]);
-  sheet.addRow(["Škofja Loka", 1.5, null]);
-  sheet.addRow(["Črnomelj", 2, "živjo"]);
-  await workbook.xlsx.writeFile(input);
+  await writeXlsx(input, [
+    {
+      name: "Data",
+      rows: [
+        ["občina", "vrednost", "opomba"],
+        ["Škofja Loka", 1.5, null],
+        ["Črnomelj", 2, "živjo"],
+      ],
+    },
+  ]);
 });
 
 afterEach(async () => rm(home, { recursive: true, force: true }));

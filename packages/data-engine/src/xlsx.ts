@@ -1,101 +1,26 @@
-// ExcelJS is CommonJS; its interop is intentionally isolated in this adapter.
-import type ExcelJS from "exceljs";
-import { createRequire } from "node:module";
 import { EXIT_CODES, KlopsiError } from "@klopsi/domain";
 import { recordsToRows } from "./csv.js";
 import type { DataRow, ValidationIssue } from "./types.js";
+import { openXlsxWorkbook, type XlsxCell, type XlsxRow, type XlsxWorkbook } from "./xlsx-reader.js";
 
-const readerOptions = {
-  sharedStrings: "cache" as const,
-  hyperlinks: "ignore" as const,
-  styles: "ignore" as const,
-  worksheets: "emit" as const,
-};
-
-interface ZipEntry {
-  readonly path: string;
-  readonly uncompressedSize: number;
-  stream(): NodeJS.ReadableStream;
-}
-
-interface ZipDirectory {
-  readonly files: readonly ZipEntry[];
-}
-
-interface UnzipperInterop {
-  readonly Open: { file(path: string): Promise<ZipDirectory> };
-}
-
-interface WorkbookReaderInternals {
-  _parseRels(stream: NodeJS.ReadableStream): Promise<void>;
-  _parseWorkbook(stream: NodeJS.ReadableStream): Promise<void>;
-  _parseSharedStrings(stream: NodeJS.ReadableStream): AsyncGenerator<unknown>;
-}
-
-type NamedWorksheetReader = ExcelJS.stream.xlsx.WorksheetReader & { readonly name: string };
-
-const localRequire = createRequire(import.meta.url);
-let excelJsPromise: Promise<typeof ExcelJS> | undefined;
-
-function loadExcelJs(): Promise<typeof ExcelJS> {
-  excelJsPromise ??= import("exceljs").then((module) => module.default);
-  return excelJsPromise;
-}
-
-async function streamingReader(
-  path: string,
-  sharedStringsByteLimit: number,
-): Promise<ExcelJS.stream.xlsx.WorkbookReader> {
-  const excelJs = await loadExcelJs();
-  const reader = new excelJs.stream.xlsx.WorkbookReader(path, readerOptions);
-  // ExcelJS 4 can encounter worksheets before workbook.xml in a valid ZIP and
-  // dereference an unset model. Preloading only the workbook metadata keeps row
-  // processing streaming while making entry ordering deterministic.
-  const excelRequire = createRequire(localRequire.resolve("exceljs/package.json"));
-  const unzipper = excelRequire("unzipper") as UnzipperInterop;
-  const directory = await unzipper.Open.file(path);
-  const entry = (name: string): ZipEntry | undefined =>
-    directory.files.find((candidate) => candidate.path === name);
-  const relationships = entry("xl/_rels/workbook.xml.rels");
-  const workbook = entry("xl/workbook.xml");
-  const sharedStrings = entry("xl/sharedStrings.xml");
-  if (sharedStrings !== undefined && sharedStrings.uncompressedSize > sharedStringsByteLimit)
-    throw new KlopsiError({
-      code: "XLSX_SHARED_STRINGS_TOO_LARGE",
-      message: "The XLSX shared-string table exceeds the bounded preview limit.",
-      exitCode: EXIT_CODES.UNSUPPORTED,
-      suggestion: "Convert the workbook to CSV or Parquet before previewing it.",
-      context: { bytes: sharedStrings.uncompressedSize, limit: sharedStringsByteLimit },
-    });
-  const internal = reader as unknown as WorkbookReaderInternals;
-  if (relationships !== undefined) await internal._parseRels(relationships.stream());
-  if (workbook !== undefined) await internal._parseWorkbook(workbook.stream());
-  if (sharedStrings !== undefined)
-    for await (const _value of internal._parseSharedStrings(sharedStrings.stream())) {
-      void _value;
-      // Cache shared strings without retaining worksheet rows.
-    }
-  return reader;
+function openBounded(path: string, sharedStringsByteLimit: number): Promise<XlsxWorkbook> {
+  return openXlsxWorkbook(path, { maxSharedStringsBytes: sharedStringsByteLimit });
 }
 
 export async function listSheets(
   path: string,
   sharedStringsByteLimit: number,
 ): Promise<readonly string[]> {
-  const workbook = await streamingReader(path, sharedStringsByteLimit);
-  const sheets: string[] = [];
-  for await (const rawWorksheet of workbook) {
-    const worksheet = rawWorksheet as NamedWorksheetReader;
-    sheets.push(worksheet.name);
-    for await (const _row of worksheet) {
-      void _row;
-      // Consume the streaming worksheet without retaining data.
-    }
-  }
-  return sheets;
+  return (await openBounded(path, sharedStringsByteLimit)).sheetNames;
 }
 
-function cellValue(cell: ExcelJS.Cell, warnings: ValidationIssue[], row: number): unknown {
+function cellValue(
+  cell: XlsxCell | undefined,
+  column: number,
+  warnings: ValidationIssue[],
+  row: number,
+): unknown {
+  if (cell === undefined) return null;
   if (cell.formula !== undefined) {
     warnings.push({
       code: "FORMULA_CELL",
@@ -105,19 +30,25 @@ function cellValue(cell: ExcelJS.Cell, warnings: ValidationIssue[], row: number)
       recommendation:
         "Review the formula in a trusted spreadsheet application if its result is needed.",
       row,
-      column: cell.fullAddress.col,
+      column,
     });
-    return `=${cell.formula}`;
+    // Shared-formula followers carry no text of their own; keep the cached value.
+    return cell.formula.length > 0 ? `=${cell.formula}` : cell.value;
   }
-  const value = cell.value;
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "object" && value !== null) {
-    if ("text" in value && typeof value.text === "string") return value.text;
-    if ("richText" in value && Array.isArray(value.richText))
-      return value.richText.map((part) => part.text).join("");
-    if ("error" in value) return String(value.error);
-  }
-  return value ?? null;
+  return cell.value;
+}
+
+function rowValues(row: XlsxRow, warnings: ValidationIssue[]): unknown[] {
+  return Array.from(row.cells, (cell, index) => cellValue(cell, index + 1, warnings, row.number));
+}
+
+function sheetNotFound(sheet: string): KlopsiError {
+  return new KlopsiError({
+    code: "SHEET_NOT_FOUND",
+    message: `XLSX sheet '${sheet}' was not found.`,
+    exitCode: EXIT_CODES.NOT_FOUND,
+    context: { sheet },
+  });
 }
 
 export async function previewXlsx(
@@ -142,36 +73,14 @@ export async function previewXlsx(
       context: { sheets },
     });
   }
-  const workbook = await streamingReader(path, sharedStringsByteLimit);
+  const workbook = await openBounded(path, sharedStringsByteLimit);
+  if (!workbook.sheetNames.includes(sheet)) throw sheetNotFound(sheet);
   const records: unknown[][] = [];
   const warnings: ValidationIssue[] = [];
-  let found = false;
-  for await (const rawWorksheet of workbook) {
-    const worksheet = rawWorksheet as NamedWorksheetReader;
-    if (worksheet.name !== sheet) {
-      for await (const _row of worksheet) {
-        void _row;
-        // Consume to advance to the requested sheet.
-      }
-      continue;
-    }
-    found = true;
-    for await (const row of worksheet) {
-      const values: unknown[] = [];
-      for (let column = 1; column <= row.cellCount; column += 1)
-        values.push(cellValue(row.getCell(column), warnings, row.number));
-      records.push(values);
-      if (records.length >= limit + 2) break;
-    }
-    break;
+  for await (const row of workbook.rows(sheet)) {
+    records.push(rowValues(row, warnings));
+    if (records.length >= limit + 2) break;
   }
-  if (!found)
-    throw new KlopsiError({
-      code: "SHEET_NOT_FOUND",
-      message: `XLSX sheet '${sheet}' was not found.`,
-      exitCode: EXIT_CODES.NOT_FOUND,
-      context: { sheet },
-    });
   const columns = (records[0] ?? []).map((value, index) =>
     value === null || value === "" ? `column_${index + 1}` : String(value),
   );
@@ -207,86 +116,67 @@ export async function scanXlsx(
       context: { sheets },
     });
   }
-  const workbook = await streamingReader(path, options.sharedStringsByteLimit);
+  const workbook = await openBounded(path, options.sharedStringsByteLimit);
+  if (!workbook.sheetNames.includes(sheet)) throw sheetNotFound(sheet);
   let columns: readonly string[] | undefined;
-  let found = false;
-  for await (const rawWorksheet of workbook) {
-    const worksheet = rawWorksheet as NamedWorksheetReader;
-    if (worksheet.name !== sheet) {
-      for await (const row of worksheet) void row;
-      continue;
-    }
-    found = true;
-    for await (const row of worksheet) {
-      const warnings: ValidationIssue[] = [];
-      const values: unknown[] = [];
-      for (let column = 1; column <= row.cellCount; column += 1)
-        values.push(cellValue(row.getCell(column), warnings, row.number));
-      if (columns === undefined) {
-        if (values.length > options.maxColumns)
-          throw new KlopsiError({
-            code: "VALIDATION_COLUMN_LIMIT",
-            message: "XLSX header exceeds the column limit.",
-            exitCode: 5,
-            suggestion: "Reduce worksheet columns.",
-          });
-        const used = new Map<string, number>();
-        columns = values.map((value, index) => {
-          const original = value === null || value === "" ? "" : String(value);
-          if (original === "")
-            onIssue({
-              code: "EMPTY_HEADER",
-              severity: "warning",
-              message: "XLSX header is empty.",
-              recommendation: "Name every column.",
-              row: 1,
-              column: index + 1,
-            });
-          const base = original || `column_${index + 1}`;
-          const count = (used.get(base) ?? 0) + 1;
-          used.set(base, count);
-          if (count > 1)
-            onIssue({
-              code: "DUPLICATE_HEADER",
-              severity: "error",
-              message: `Header '${base}' is duplicated.`,
-              recommendation: "Rename duplicate columns.",
-              row: 1,
-              column: index + 1,
-              field: base,
-            });
-          return count === 1 ? base : `${base}_${count}`;
+  for await (const row of workbook.rows(sheet)) {
+    const warnings: ValidationIssue[] = [];
+    const values = rowValues(row, warnings);
+    if (columns === undefined) {
+      if (values.length > options.maxColumns)
+        throw new KlopsiError({
+          code: "VALIDATION_COLUMN_LIMIT",
+          message: "XLSX header exceeds the column limit.",
+          exitCode: 5,
+          suggestion: "Reduce worksheet columns.",
         });
-        onHeader(columns, warnings);
-      } else {
-        if (values.length > columns.length)
+      const used = new Map<string, number>();
+      columns = values.map((value, index) => {
+        const original = value === null || value === "" ? "" : String(value);
+        if (original === "")
           onIssue({
-            code: "INCONSISTENT_COLUMN_COUNT",
+            code: "EMPTY_HEADER",
+            severity: "warning",
+            message: "XLSX header is empty.",
+            recommendation: "Name every column.",
+            row: 1,
+            column: index + 1,
+          });
+        const base = original || `column_${index + 1}`;
+        const count = (used.get(base) ?? 0) + 1;
+        used.set(base, count);
+        if (count > 1)
+          onIssue({
+            code: "DUPLICATE_HEADER",
             severity: "error",
-            message: `XLSX row ${row.number} has ${values.length} columns; expected ${columns.length}.`,
-            recommendation: "Match every row to the header width.",
-            row: row.number,
+            message: `Header '${base}' is duplicated.`,
+            recommendation: "Rename duplicate columns.",
+            row: 1,
+            column: index + 1,
+            field: base,
           });
-        const expanded = [...columns];
-        while (expanded.length < values.length)
-          expanded.push(`extra_column_${expanded.length + 1}`);
-        if (expanded.length > options.maxColumns)
-          throw new KlopsiError({
-            code: "VALIDATION_COLUMN_LIMIT",
-            message: "XLSX row exceeds the column limit.",
-            exitCode: 5,
-            suggestion: "Reduce worksheet columns.",
-          });
-        onRow(recordsToRows(expanded, [values])[0] ?? {}, warnings);
-      }
+        return count === 1 ? base : `${base}_${count}`;
+      });
+      onHeader(columns, warnings);
+    } else {
+      if (values.length > columns.length)
+        onIssue({
+          code: "INCONSISTENT_COLUMN_COUNT",
+          severity: "error",
+          message: `XLSX row ${row.number} has ${values.length} columns; expected ${columns.length}.`,
+          recommendation: "Match every row to the header width.",
+          row: row.number,
+        });
+      const expanded = [...columns];
+      while (expanded.length < values.length) expanded.push(`extra_column_${expanded.length + 1}`);
+      if (expanded.length > options.maxColumns)
+        throw new KlopsiError({
+          code: "VALIDATION_COLUMN_LIMIT",
+          message: "XLSX row exceeds the column limit.",
+          exitCode: 5,
+          suggestion: "Reduce worksheet columns.",
+        });
+      onRow(recordsToRows(expanded, [values])[0] ?? {}, warnings);
     }
-    break;
   }
-  if (!found)
-    throw new KlopsiError({
-      code: "SHEET_NOT_FOUND",
-      message: `XLSX sheet '${sheet}' was not found.`,
-      exitCode: EXIT_CODES.NOT_FOUND,
-      context: { sheet },
-    });
 }

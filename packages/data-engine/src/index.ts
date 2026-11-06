@@ -6,6 +6,10 @@ export { DEFAULT_ARCHIVE_LIMITS, extractArchiveEntry, inspectArchive } from "./a
 export type { ArchiveEntry, ArchiveInspection, ArchiveLimits } from "./archive.js";
 export { DEFAULT_XML_LIMITS, discoverXmlRecords, previewXml, writeXmlRowsAsNdjson } from "./xml.js";
 export type { XmlDiscovery, XmlLimits, XmlPreview } from "./xml.js";
+export { DEFAULT_XLSX_READ_LIMITS, openXlsxWorkbook } from "./xlsx-reader.js";
+export type { XlsxCell, XlsxReadLimits, XlsxRow, XlsxValue, XlsxWorkbook } from "./xlsx-reader.js";
+export { writeXlsx } from "./xlsx-writer.js";
+export type { XlsxSheetSource, XlsxWriteValue } from "./xlsx-writer.js";
 export {
   DEFAULT_PCAXIS_LIMITS,
   parsePcAxisMetadata,

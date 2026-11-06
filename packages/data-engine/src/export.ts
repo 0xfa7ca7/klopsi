@@ -1,41 +1,33 @@
-// ExcelJS is CommonJS; its interop is intentionally isolated in this adapter.
-import type ExcelJS from "exceljs";
 import type { JS } from "@duckdb/node-api";
 import type { TabularStage } from "./tabular-stage.js";
 import { sqlString } from "./sql-path.js";
 import type { SupportedDataFormat } from "./types.js";
+import { writeXlsx, type XlsxWriteValue } from "./xlsx-writer.js";
 
-let excelJsPromise: Promise<typeof ExcelJS> | undefined;
-
-function loadExcelJs(): Promise<typeof ExcelJS> {
-  excelJsPromise ??= import("exceljs").then((module) => module.default);
-  return excelJsPromise;
-}
-
-function excelValue(value: JS): ExcelJS.CellValue {
+function excelValue(value: JS): XlsxWriteValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
   if (typeof value === "bigint")
     return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString();
   if (value instanceof Date) return value;
   if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
-  return JSON.stringify(value);
+  return JSON.stringify(value, (_key, nested: unknown) =>
+    typeof nested === "bigint" ? nested.toString() : nested,
+  );
+}
+
+async function* stageRows(
+  stage: TabularStage,
+  select: string,
+): AsyncGenerator<readonly XlsxWriteValue[]> {
+  yield stage.columns.map((column) => column.name);
+  const result = await stage.connection.stream(select);
+  for await (const batch of result.yieldRowsJs())
+    for (const values of batch) yield values.map(excelValue);
 }
 
 async function exportXlsx(stage: TabularStage, output: string, select: string): Promise<void> {
-  const excelJs = await loadExcelJs();
-  const workbook = new excelJs.stream.xlsx.WorkbookWriter({
-    filename: output,
-    useStyles: false,
-    useSharedStrings: false,
-  });
-  const worksheet = workbook.addWorksheet("Data");
-  worksheet.addRow(stage.columns.map((column) => column.name)).commit();
-  const result = await stage.connection.stream(select);
-  for await (const batch of result.yieldRowsJs())
-    for (const values of batch) worksheet.addRow(values.map(excelValue)).commit();
-  worksheet.commit();
-  await workbook.commit();
+  await writeXlsx(output, [{ name: "Data", rows: stageRows(stage, select) }]);
 }
 
 export async function exportStage(

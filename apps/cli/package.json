@@ -40,7 +40,6 @@
   "dependencies": {
     "commander": "15.0.0",
     "csv-parse": "7.0.3",
-    "exceljs": "4.4.0",
     "open": "11.0.4",
     "skills": "1.5.19",
     "undici": "8.12.3",
