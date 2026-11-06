@@ -1,3 +1,4 @@
+import type { QueryParameter } from "./query-parameters.js";
 import type { DataRow } from "./types.js";
 
 export interface QueryLimits {
@@ -15,6 +16,8 @@ export interface QueryWorkerRequest {
   readonly databasePath: string;
   readonly invocationDirectory: string;
   readonly sql: string;
+  /** Named `$name` parameters bound to the prepared statement, never interpolated. */
+  readonly parameters?: readonly QueryParameter[];
   readonly limits: QueryLimits;
 }
 
@@ -33,7 +36,7 @@ export type QueryWorkerMessage =
       readonly error: {
         readonly code: string;
         readonly message: string;
-        readonly exitCode: 7;
+        readonly exitCode: 2 | 7;
         readonly context?: Readonly<Record<string, unknown>>;
       };
     };

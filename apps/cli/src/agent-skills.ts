@@ -285,6 +285,9 @@ export const AGENT_SKILLS: readonly AgentSkillDefinition[] = [
         instructions: [
           "Use one read-only `SELECT`, `WITH ... SELECT`, or `VALUES` statement, with an explicit `--limit` and a suitable timeout.",
           "Keep global query row, time, memory, and thread bounds appropriate to the requested result; correct exit 7 rather than retrying the same query.",
+          "Never splice user-supplied values into SQL text; write `$name` placeholders and pass each value with repeatable `--param name=value`, or `name:int=`, `name:double=`, `name:bool=`, `name:date=` for typed values.",
+          "Put long or multi-line SQL in a UTF-8 file and pass `--sql-file <path>` (or `--sql-file -` for piped stdin) instead of shell-quoting it with `--sql`; use exactly one of the two.",
+          "Treat exit 2 `QUERY_PARAM_*` errors as an argument mismatch: supply every placeholder listed in `context.missing`, drop names in `context.unused`, and correct invalid typed values.",
         ],
       },
       {

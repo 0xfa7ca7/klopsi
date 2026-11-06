@@ -8,6 +8,7 @@ describe("QueryPolicy", () => {
     "VALUES (1), (2)",
     "-- comment;\nSELECT ';' AS value /* ; */",
     "\u2003SELECT 1",
+    "SELECT $city AS city WHERE $limit > 0",
   ])("accepts one read-only SELECT statement: %s", async (sql) => {
     await expect(QueryPolicy.validate(sql)).resolves.toBeUndefined();
   });
@@ -32,6 +33,8 @@ describe("QueryPolicy", () => {
     ["transaction", "BEGIN TRANSACTION"],
     ["export", "EXPORT DATABASE '/tmp/export'"],
     ["explain", "EXPLAIN SELECT 1"],
+    ["parameterized copy", "COPY (SELECT $x) TO '/tmp/out.csv'"],
+    ["parameterized multiple", "SELECT $x; DROP TABLE data"],
   ])("rejects %s SQL", async (_label, sql) => {
     await expect(QueryPolicy.validate(sql)).rejects.toMatchObject({
       code: "QUERY_FORBIDDEN",

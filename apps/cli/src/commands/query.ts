@@ -1,7 +1,28 @@
 import type { Command } from "commander";
 import type { KlopsiClient } from "@klopsi/core";
+import { parseQueryParameter, validateQueryParameters } from "@klopsi/data-engine";
+import { EXIT_CODES, KlopsiError } from "@klopsi/domain";
 import type { CliContext } from "../context.js";
 import { manifestCommand } from "../command-manifest.js";
+import { readSqlFile } from "../sql-file.js";
+
+async function statement(
+  options: { readonly sql?: string; readonly sqlFile?: string },
+  context: CliContext,
+): Promise<string> {
+  if ((options.sql === undefined) === (options.sqlFile === undefined))
+    throw new KlopsiError({
+      code: "QUERY_SQL_REQUIRED",
+      message: "Provide exactly one of --sql or --sql-file.",
+      exitCode: EXIT_CODES.INVALID_INPUT,
+      suggestion: "Pass --sql '<statement>' or --sql-file <path> (use - to read standard input).",
+    });
+  if (options.sql !== undefined) return options.sql;
+  return readSqlFile(options.sqlFile as string, {
+    ...(context.io.cwd === undefined ? {} : { cwd: context.io.cwd }),
+    ...(context.io.stdin === undefined ? {} : { stdin: context.io.stdin }),
+  });
+}
 
 export function registerQueryCommand(
   program: Command,
@@ -12,7 +33,9 @@ export function registerQueryCommand(
     async (
       input: string,
       options: {
-        readonly sql: string;
+        readonly sql?: string;
+        readonly sqlFile?: string;
+        readonly param?: readonly string[];
         readonly limit?: number;
         readonly timeoutMs?: number;
         readonly sheet?: string;
@@ -24,6 +47,8 @@ export function registerQueryCommand(
         readonly allowPrivateNetwork?: boolean;
       },
     ) => {
+      const sql = await statement(options, context);
+      const parameters = validateQueryParameters((options.param ?? []).map(parseQueryParameter));
       const global = program.opts() as {
         queryRowLimit?: number;
         queryTimeoutMs?: number;
@@ -42,7 +67,8 @@ export function registerQueryCommand(
       process.once("SIGTERM", cancel);
       try {
         const result = await client.query.execute(input, {
-          sql: options.sql,
+          sql,
+          ...(parameters.length === 0 ? {} : { parameters }),
           ...(limit === undefined ? {} : { limit }),
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
           ...(memoryLimit === undefined ? {} : { memoryLimit }),
@@ -61,6 +87,7 @@ export function registerQueryCommand(
             context.io.stderr.write(`warning [${warning.code}]: ${warning.message}\n`);
         context.renderer?.write(result.rows, {
           sql: result.sql,
+          ...(result.parameters === undefined ? {} : { parameters: result.parameters }),
           columns: result.columns,
           returnedCount: result.returnedCount,
           truncated: result.truncated,

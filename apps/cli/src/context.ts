@@ -7,7 +7,10 @@ export interface CliIo {
   readonly env?: NodeJS.ProcessEnv;
   readonly stdout: WritableOutput;
   readonly stderr: WritableOutput;
-  readonly stdin?: { readonly isTTY?: boolean };
+  readonly stdin?: {
+    readonly isTTY?: boolean;
+    [Symbol.asyncIterator]?(): AsyncIterator<unknown>;
+  };
   readonly confirm?: (message: string) => Promise<boolean>;
 }
 

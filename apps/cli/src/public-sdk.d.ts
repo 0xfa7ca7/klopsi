@@ -590,8 +590,17 @@ interface ConversionServiceOptions extends DataResolutionOptions {
 declare class ConversionService {
   convert(input: string, options: ConversionServiceOptions): Promise<EngineConversionResult>;
 }
+/** Named query parameter types; values are bound to `$name` placeholders, never interpolated. */
+export type QueryParameterType = "varchar" | "int" | "double" | "bool" | "date";
+export interface QueryParameter {
+  readonly name: string;
+  readonly type: QueryParameterType;
+  /** Exact text value; `int`, `double`, `bool`, and `date` values are validated before binding. */
+  readonly value: string;
+}
 interface QueryServiceOptions extends DataResolutionOptions {
   readonly sql: string;
+  readonly parameters?: readonly QueryParameter[];
   readonly limit?: number;
   readonly timeoutMs?: number;
   readonly memoryLimit?: string;
@@ -607,6 +616,7 @@ interface QueryServiceResult {
   readonly returnedCount: number;
   readonly truncated: boolean;
   readonly sql: string;
+  readonly parameters?: readonly QueryParameter[];
   readonly source: string;
   readonly durationMs: number;
   readonly cache: QueryCacheMetadata;

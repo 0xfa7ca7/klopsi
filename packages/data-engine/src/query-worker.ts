@@ -2,6 +2,11 @@ import { availableParallelism } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { DuckDBInstance, DuckDBConnection, DuckDBPreparedStatement } from "@duckdb/node-api";
 import { duckDbMemoryLimitBytes } from "@klopsi/domain";
+import {
+  queryParameterDateDays,
+  validateQueryParameters,
+  type QueryParameter,
+} from "./query-parameters.js";
 import type {
   QueryLimits,
   QueryResult,
@@ -27,10 +32,11 @@ function failure(
   code: string,
   message: string,
   context?: Readonly<Record<string, unknown>>,
+  exitCode: 2 | 7 = 7,
 ): WorkerError {
   return Object.assign(new Error(message), {
     code,
-    exitCode: 7,
+    exitCode,
     ...(context === undefined ? {} : { context }),
   });
 }
@@ -103,6 +109,85 @@ async function validateAndPrepare(connection: DuckDBConnection, sql: string, lim
   return prepared;
 }
 
+function placeholderLabel(name: string): string {
+  return /^\d+$/u.test(name) ? `positional #${name}` : `$${name}`;
+}
+
+/**
+ * Binds validated named parameters to the prepared statement. Values are passed
+ * to DuckDB as typed bindings and never become part of the SQL text.
+ */
+async function bindParameters(
+  prepared: DuckDBPreparedStatement,
+  supplied: readonly QueryParameter[],
+): Promise<void> {
+  let parameters: readonly QueryParameter[];
+  try {
+    parameters = validateQueryParameters(supplied);
+  } catch (error) {
+    const typed = error as WorkerError;
+    throw failure(typed.code ?? "QUERY_PARAM_INVALID", typed.message, typed.context, 2);
+  }
+  const byName = new Map(parameters.map((parameter) => [parameter.name.toLowerCase(), parameter]));
+  const placeholders = Array.from({ length: prepared.parameterCount }, (_, index) =>
+    prepared.parameterName(index + 1),
+  );
+  const missing = placeholders.filter((name) => !byName.has(name.toLowerCase()));
+  if (missing.length > 0)
+    throw failure(
+      "QUERY_PARAM_MISSING",
+      `The query uses placeholders without a --param value: ${missing.map(placeholderLabel).join(", ")}. Use named $name placeholders and supply each with --param.`,
+      { missing },
+      2,
+    );
+  const expected = new Set(placeholders.map((name) => name.toLowerCase()));
+  const unused = parameters
+    .filter((parameter) => !expected.has(parameter.name.toLowerCase()))
+    .map((parameter) => parameter.name);
+  if (unused.length > 0)
+    throw failure(
+      "QUERY_PARAM_UNUSED",
+      `The query does not use parameter(s): ${unused.join(", ")}.`,
+      { unused },
+      2,
+    );
+  if (placeholders.length === 0) return;
+  const { dateValue } = await import("@duckdb/node-api");
+  placeholders.forEach((name, offset) => {
+    const index = offset + 1;
+    const parameter = byName.get(name.toLowerCase());
+    if (parameter === undefined) return;
+    switch (parameter.type) {
+      case "varchar":
+        prepared.bindVarchar(index, parameter.value);
+        return;
+      case "int":
+        prepared.bindBigInt(index, BigInt(parameter.value));
+        return;
+      case "double":
+        prepared.bindDouble(index, Number(parameter.value));
+        return;
+      case "bool":
+        prepared.bindBoolean(index, parameter.value === "true");
+        return;
+      case "date": {
+        const days = queryParameterDateDays(parameter.value);
+        if (days === undefined)
+          throw failure(
+            "QUERY_PARAM_INVALID",
+            `Query parameter '${parameter.name}' is invalid.`,
+            {
+              name: parameter.name,
+            },
+            2,
+          );
+        prepared.bindDate(index, dateValue(days));
+        return;
+      }
+    }
+  });
+}
+
 export async function executeQueryWorker(request: QueryWorkerRequest): Promise<QueryResult> {
   let instance: DuckDBInstance | undefined;
   let connection: DuckDBConnection | undefined;
@@ -144,6 +229,7 @@ export async function executeQueryWorker(request: QueryWorkerRequest): Promise<Q
     )
       throw failure("QUERY_TEMP_ISOLATION", "DuckDB's spill directory escaped query isolation.");
     prepared = await validateAndPrepare(connection, request.sql, request.limits);
+    await bindParameters(prepared, request.parameters ?? []);
     if (prepared.columnCount > request.limits.maxColumns)
       throw failure(
         "QUERY_COLUMN_LIMIT",
@@ -214,7 +300,7 @@ export function startQueryWorker(): void {
             error: {
               code: error.code ?? "QUERY_FAILED",
               message: error.message ?? String(rawError),
-              exitCode: 7,
+              exitCode: error.exitCode === 2 ? 2 : 7,
               ...(error.context === undefined ? {} : { context: error.context }),
             },
           });

@@ -2,7 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, rm } from "node:fs/promises";
 import { extname, resolve } from "node:path";
-import { type DataInput, type DataRow, type QueryResult } from "@klopsi/data-engine";
+import {
+  validateQueryParameters,
+  type DataInput,
+  type DataRow,
+  type QueryParameter,
+  type QueryResult,
+} from "@klopsi/data-engine";
 import { EXIT_CODES, KlopsiError } from "@klopsi/domain";
 import { publishArtifactPair, type PairPublicationOptions } from "@klopsi/storage";
 import type { DataResolutionOptions, DataService } from "./data.js";
@@ -15,6 +21,8 @@ import {
 
 export interface QueryServiceOptions extends DataResolutionOptions {
   readonly sql: string;
+  /** Named `$name` parameters bound through DuckDB prepared statements, never interpolated. */
+  readonly parameters?: readonly QueryParameter[];
   readonly limit?: number;
   readonly timeoutMs?: number;
   readonly memoryLimit?: string;
@@ -27,6 +35,8 @@ export interface QueryServiceOptions extends DataResolutionOptions {
 }
 
 export interface QueryServiceResult extends QueryResult {
+  /** Bound parameters; present only when at least one parameter was supplied. */
+  readonly parameters?: readonly QueryParameter[];
   readonly source: string;
   readonly durationMs: number;
   readonly cache: QueryCacheMetadata;
@@ -84,6 +94,7 @@ async function publishQueryOutput(
   input: string,
   output: string,
   sql: string,
+  parameters: readonly QueryParameter[],
   rows: readonly DataRow[],
   columns: readonly string[],
   force: boolean,
@@ -112,7 +123,7 @@ async function publishQueryOutput(
           operation: "query",
           timestamp: new Date().toISOString(),
           inputSha256: sourceDigest.sha256,
-          details: { sql },
+          details: { sql, ...(parameters.length === 0 ? {} : { parameters }) },
         },
       ],
     };
@@ -168,11 +179,13 @@ export class QueryService {
     });
   }
 
-  execute(input: string, options: QueryServiceOptions): Promise<QueryServiceResult> {
+  async execute(input: string, options: QueryServiceOptions): Promise<QueryServiceResult> {
+    const parameters = validateQueryParameters(options.parameters ?? []);
     return this.data.withResolvedInput(input, options, async (source) => {
       const started = performance.now();
       const result = await this.databases.execute(source, {
         sql: options.sql,
+        ...(parameters.length === 0 ? {} : { parameters }),
         ...(options.limit === undefined ? {} : { rowLimit: options.limit }),
         ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         ...(options.memoryLimit === undefined ? {} : { memoryLimit: options.memoryLimit }),
@@ -189,6 +202,7 @@ export class QueryService {
               sourceName,
               options.output,
               options.sql,
+              parameters,
               result.rows,
               result.columns,
               options.force ?? false,
@@ -196,6 +210,7 @@ export class QueryService {
             );
       return {
         ...result,
+        ...(parameters.length === 0 ? {} : { parameters }),
         source: sourceName,
         durationMs: performance.now() - started,
         ...publication,

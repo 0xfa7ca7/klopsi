@@ -319,6 +319,7 @@ export class QueryDatabaseCache {
         databasePath,
         invocationDirectory: dirname(databasePath),
         sql: options.sql,
+        ...(options.parameters === undefined ? {} : { parameters: options.parameters }),
         ...(options.rowLimit === undefined ? {} : { rowLimit: options.rowLimit }),
         ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         ...(options.maxSqlBytes === undefined ? {} : { maxSqlBytes: options.maxSqlBytes }),
