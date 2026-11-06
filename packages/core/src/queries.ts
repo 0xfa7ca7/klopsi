@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, rm } from "node:fs/promises";
 import { extname, resolve } from "node:path";
-import { type DataInput, type DataRow, type QueryResult } from "@klopsi/data-engine";
+import {
+  type ColumnProfile,
+  type DataInput,
+  type DataRow,
+  type QueryResult,
+} from "@klopsi/data-engine";
 import { EXIT_CODES, KlopsiError } from "@klopsi/domain";
 import { publishArtifactPair, type PairPublicationOptions } from "@klopsi/storage";
 import type { DataResolutionOptions, DataService } from "./data.js";
@@ -33,6 +38,25 @@ export interface QueryServiceResult extends QueryResult {
   readonly warnings: readonly QueryDatabaseWarning[];
   readonly output?: string;
   readonly provenancePath?: string;
+}
+
+export interface ProfileServiceOptions extends DataResolutionOptions {
+  readonly timeoutMs?: number;
+  readonly memoryLimit?: string;
+  readonly threads?: number;
+  readonly sheet?: string;
+  readonly recordPath?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface ProfileServiceResult {
+  readonly columns: readonly ColumnProfile[];
+  readonly source: string;
+  readonly columnCount: number;
+  readonly rowCount: number;
+  readonly durationMs: number;
+  readonly cache: QueryCacheMetadata;
+  readonly warnings: readonly QueryDatabaseWarning[];
 }
 
 export interface QueryDatabaseServiceOptions extends DataResolutionOptions {
@@ -199,6 +223,30 @@ export class QueryService {
         source: sourceName,
         durationMs: performance.now() - started,
         ...publication,
+      };
+    });
+  }
+
+  /** Return per-column statistics for any input accepted by {@link execute}. */
+  profile(input: string, options: ProfileServiceOptions): Promise<ProfileServiceResult> {
+    return this.data.withResolvedInput(input, options, async (source) => {
+      const started = performance.now();
+      const result = await this.databases.profile(source, {
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(options.memoryLimit === undefined ? {} : { memoryLimit: options.memoryLimit }),
+        ...(options.threads === undefined ? {} : { threads: options.threads }),
+        ...(options.sheet === undefined ? {} : { sheet: options.sheet }),
+        ...(options.recordPath === undefined ? {} : { recordPath: options.recordPath }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+      return {
+        columns: result.columns,
+        source: resolve(sourcePath(source)),
+        columnCount: result.columns.length,
+        rowCount: result.rowCount,
+        durationMs: performance.now() - started,
+        cache: result.cache,
+        warnings: result.warnings,
       };
     });
   }

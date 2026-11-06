@@ -261,11 +261,12 @@ export const AGENT_SKILLS: readonly AgentSkillDefinition[] = [
     kind: "command",
     name: "klopsi-analysis",
     description:
-      "Use when querying or converting bounded data, including ZIP, XML, JSON, XLSX, Parquet, or query exports.",
-    commands: ["query", "convert"],
-    purpose: "Analyze tabular inputs with bounded read-only SQL or convert supported formats.",
+      "Use when profiling, querying, or converting bounded data, including ZIP, XML, JSON, XLSX, Parquet, or query exports.",
+    commands: ["profile", "query", "convert"],
+    purpose:
+      "Profile columns, analyze tabular inputs with bounded read-only SQL, or convert supported formats.",
     workflows: [
-      "Preview and validate input before running a bounded query.",
+      "Preview and validate input, then run `klopsi profile` to learn column types, nulls, and ranges before writing a bounded query.",
       "Convert an input and then verify the generated provenance record.",
     ],
     capabilities: [
@@ -277,6 +278,15 @@ export const AGENT_SKILLS: readonly AgentSkillDefinition[] = [
           "Use a resolved `--entry`, `--record-path`, or `--sheet` whenever ZIP, XML, or XLSX input is ambiguous.",
           "PC-Axis is input-only: convert it to CSV, TSV, JSON, NDJSON, XLSX, or Parquet, never to PC-Axis.",
           "In staged PC-Axis rows, keep `__code` fields as strings and interpret a source-symbol null as `value IS NULL` with the original token in `value__symbol`; do not confuse it with numeric zero.",
+        ],
+      },
+      {
+        id: "column-profile",
+        title: "Profile columns before querying",
+        instructions: [
+          "Run `klopsi profile <input> --json` to get one row per staged column with `type`, `count`, `nullCount`, `nullPercent`, `distinctApprox`, `min`, `max`, and numeric `mean` and `stddev`.",
+          "Use the reported column names and DuckDB types to write correctly quoted SQL; `min` and `max` are text so large integers stay exact, and `distinctApprox` is an estimate.",
+          "Profile shares query staging, cache, and time, memory, and thread bounds; it accepts the same `--sheet`, `--entry`, and `--record-path` selectors and fails with exit 7 on timeout or cancellation.",
         ],
       },
       {
@@ -943,7 +953,8 @@ Do not pass \`/klopsi\`, \`@klopsi\`, or \`$klopsi\` to the shell. Those are hos
 
 1. Search with a bounded result set, inspect the selected dataset and resource, then preview and validate the chosen input.
 2. Download it to a new destination when local processing is needed; then use \`--offline\` for the local validation, query, conversion, and provenance steps.
-3. Keep queries read-only and bounded, authorize any overwrite, and run \`provenance verify\` for important outputs.
+3. Run \`klopsi profile\` to learn column types, null rates, and value ranges before writing SQL.
+4. Keep queries read-only and bounded, authorize any overwrite, and run \`provenance verify\` for important outputs.
 
 ### ${definition.workflows[1]}
 

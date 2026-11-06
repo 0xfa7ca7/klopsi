@@ -10,7 +10,7 @@ Installable Agent Skills for using the KLOPSI CLI from compatible AI agents. Run
 | [klopsi-resources](../skills/klopsi-resources/SKILL.md) | Use when inspecting an OPSI resource, its secure access, headers, or bounded preview before the next step. |
 | [klopsi-download](../skills/klopsi-download/SKILL.md) | Use when securely downloading an OPSI dataset or resource and choosing a destination or overwrite handling. |
 | [klopsi-validation](../skills/klopsi-validation/SKILL.md) | Use when checking local or provider data, or OPSI metadata, for integrity issues and remediation. |
-| [klopsi-analysis](../skills/klopsi-analysis/SKILL.md) | Use when querying or converting bounded data, including ZIP, XML, JSON, XLSX, Parquet, or query exports. |
+| [klopsi-analysis](../skills/klopsi-analysis/SKILL.md) | Use when profiling, querying, or converting bounded data, including ZIP, XML, JSON, XLSX, Parquet, or query exports. |
 | [klopsi-dataset-workbench](../skills/klopsi-dataset-workbench/SKILL.md) | Use when acquired or computed Slovenian public data should be represented as an explorable database with SQL, profiles, tables, charts, or an Example queries notebook. |
 | [klopsi-services](../skills/klopsi-services/SKILL.md) | Use when Slovenian public data is exposed through WFS and the request needs capabilities, layers, schemas, bounded feature previews, counts, or CSV exports. |
 | [klopsi-provenance](../skills/klopsi-provenance/SKILL.md) | Use when inspecting or verifying KLOPSI artifact provenance, transformations, or integrity mismatches. |

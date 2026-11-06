@@ -629,8 +629,38 @@ export interface DuckDbCachePolicy {
   readonly maxBytes: number;
   readonly ttlMs: number;
 }
+export interface ColumnProfile {
+  readonly column: string;
+  readonly type: string;
+  readonly count: number;
+  readonly nullCount: number;
+  readonly nullPercent: number | null;
+  readonly distinctApprox: number;
+  readonly min: string | null;
+  readonly max: string | null;
+  readonly mean: number | null;
+  readonly stddev: number | null;
+}
+export interface ProfileServiceOptions extends DataResolutionOptions {
+  readonly timeoutMs?: number;
+  readonly memoryLimit?: string;
+  readonly threads?: number;
+  readonly sheet?: string;
+  readonly recordPath?: string;
+  readonly signal?: AbortSignal;
+}
+export interface ProfileServiceResult {
+  readonly columns: readonly ColumnProfile[];
+  readonly source: string;
+  readonly columnCount: number;
+  readonly rowCount: number;
+  readonly durationMs: number;
+  readonly cache: QueryCacheMetadata;
+  readonly warnings: readonly QueryDatabaseWarning[];
+}
 declare class QueryService {
   execute(input: string, options: QueryServiceOptions): Promise<QueryServiceResult>;
+  profile(input: string, options: ProfileServiceOptions): Promise<ProfileServiceResult>;
 }
 
 export type WfsVersion = "2.0.0" | "1.1.0" | "1.0.0";

@@ -20,7 +20,7 @@ Use this skill as the main entry point for Slovenian public-data work with the `
 | Inspect a resource safely without committing to a full data workflow. | [klopsi-resources](../klopsi-resources/SKILL.md) |
 | Download selected provider resources through the CLI's bounded secure downloader. | [klopsi-download](../klopsi-download/SKILL.md) |
 | Validate data content or normalized metadata and explain actionable issues. | [klopsi-validation](../klopsi-validation/SKILL.md) |
-| Analyze tabular inputs with bounded read-only SQL or convert supported formats. | [klopsi-analysis](../klopsi-analysis/SKILL.md) |
+| Profile columns, analyze tabular inputs with bounded read-only SQL, or convert supported formats. | [klopsi-analysis](../klopsi-analysis/SKILL.md) |
 | Represent a resolved tabular dataset as the read-only `data` relation in a writable local database workbench. | [klopsi-dataset-workbench](../klopsi-dataset-workbench/SKILL.md) |
 | Access WFS feature services through bounded, schema-validated KLOPSI workflows. | [klopsi-services](../klopsi-services/SKILL.md) |
 | Inspect recorded lineage and verify an artifact against its digest. | [klopsi-provenance](../klopsi-provenance/SKILL.md) |
@@ -37,7 +37,8 @@ Do not pass `/klopsi`, `@klopsi`, or `$klopsi` to the shell. Those are host-spec
 
 1. Search with a bounded result set, inspect the selected dataset and resource, then preview and validate the chosen input.
 2. Download it to a new destination when local processing is needed; then use `--offline` for the local validation, query, conversion, and provenance steps.
-3. Keep queries read-only and bounded, authorize any overwrite, and run `provenance verify` for important outputs.
+3. Run `klopsi profile` to learn column types, null rates, and value ranges before writing SQL.
+4. Keep queries read-only and bounded, authorize any overwrite, and run `provenance verify` for important outputs.
 
 ### Inspect and export WFS data
 

@@ -86,6 +86,7 @@ Run `klopsi --help` or read the [complete command reference](https://github.com/
 | Inspect or preview a resource | `klopsi resource show <id>` / `klopsi resource preview <input>` |
 | Download data                 | `klopsi download <ids...>`                                      |
 | Validate data or metadata     | `klopsi validate <input>`                                       |
+| Profile columns               | `klopsi profile <input>`                                        |
 | Query tabular data            | `klopsi query <input> --sql <statement>`                        |
 | Explore data in DuckDB UI     | `klopsi duckdb open <input>`                                    |
 | Convert formats               | `klopsi convert <input> --to <format> --output <path>`          |

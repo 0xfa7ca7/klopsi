@@ -48,6 +48,7 @@ async function compileSdkConsumer(directory: string): Promise<void> {
   KlopsiClient,
   ProviderRegistry,
   type CanonicalReference,
+  type ColumnProfile,
   type Dataset,
   type DatasetId,
   type DuckDbCachePolicy,
@@ -58,6 +59,8 @@ async function compileSdkConsumer(directory: string): Promise<void> {
   type NextAction,
   type ParsedCanonicalReference,
   type PcAxisLimits,
+  type ProfileServiceOptions,
+  type ProfileServiceResult,
   type ProviderId,
   type Provenance,
   type QueryResult,
@@ -218,7 +221,14 @@ const operations = [
   client.data.convert('/tmp/traffic.csv', { output: '/tmp/traffic.json', targetFormat: 'json' }).then((result) => result.warnings),
   client.conversions.convert('/tmp/traffic.csv', { output: '/tmp/traffic.tsv', targetFormat: 'tsv' }).then((result) => result.provenancePath),
   client.query.execute('/tmp/traffic.csv', { sql: 'select * from data', limit: 5 }).then((result) => [result.source, result.durationMs, result.cache.status, result.warnings]),
+  client.query.profile('/tmp/traffic.csv', { timeoutMs: 1_000 }).then((result: ProfileServiceResult) => [result.columnCount, result.rowCount, result.cache.status]),
 ];
+const columnProfile: ColumnProfile = {
+  column: 'count', type: 'BIGINT', count: 1, nullCount: 0, nullPercent: 0, distinctApprox: 1,
+  min: '42', max: '42', mean: 42, stddev: null,
+};
+const profileOptions: ProfileServiceOptions = { sheet: 'Data', allowPrivateNetwork: false };
+void [columnProfile.min, profileOptions.sheet];
 void [access.kind, dataset.providerMetadata?.raw.source, validation.schema?.fields[0]?.nullable,
   download.provenance.transformations[0]?.operation, queryResult.rows[0]?.count,
   queryCache.status, queryWarning.code, queryDataWarning.code,

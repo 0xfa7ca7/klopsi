@@ -242,6 +242,18 @@ export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
     ],
   ),
   leaf(
+    "profile",
+    "Summarize per-column statistics for tabular data",
+    [argument("<input>", "local path or canonical resource reference")],
+    [
+      option("--timeout-ms <milliseconds>", "hard profile deadline", { parser: "positive" }),
+      option("--sheet <name>", "XLSX sheet name"),
+      option("--entry <path>", "ZIP data entry path"),
+      option("--record-path <path>", "XML record element path"),
+      ...NETWORK_OPTIONS,
+    ],
+  ),
+  leaf(
     "duckdb open",
     "Open tabular data in DuckDB UI",
     [argument("<input>", "local path or canonical resource reference")],

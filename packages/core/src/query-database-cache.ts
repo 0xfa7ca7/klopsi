@@ -6,12 +6,15 @@ import { dirname, join } from "node:path";
 import {
   DEFAULT_PCAXIS_LIMITS,
   detectFormat,
+  profileStagedDatabase,
   stageTabularInput,
   verifyStagedDatabase,
   type DataInput,
   type DuckDbQueryRunner,
   type PreparedQueryExecutionOptions,
   type PcAxisLimits,
+  type ProfileExecutionOptions,
+  type ProfileResult,
   type QueryResult,
   type SupportedInputFormat,
   type TabularStage,
@@ -46,6 +49,10 @@ export type QueryDatabaseExecutionOptions = Omit<
   PreparedQueryExecutionOptions,
   "databasePath" | "invocationDirectory"
 > & { readonly sheet?: string; readonly recordPath?: string };
+export type QueryDatabaseProfileOptions = Omit<
+  ProfileExecutionOptions,
+  "databasePath" | "invocationDirectory"
+> & { readonly sheet?: string; readonly recordPath?: string };
 export type QueryDatabasePreparationOptions = Pick<
   QueryDatabaseExecutionOptions,
   "sheet" | "recordPath" | "signal"
@@ -63,6 +70,11 @@ export interface QueryDatabaseCacheOptions {
 }
 
 export interface QueryDatabaseResult extends QueryResult {
+  readonly cache: QueryCacheMetadata;
+  readonly warnings: readonly QueryDatabaseWarning[];
+}
+
+export interface QueryDatabaseProfileResult extends ProfileResult {
   readonly cache: QueryCacheMetadata;
   readonly warnings: readonly QueryDatabaseWarning[];
 }
@@ -276,7 +288,15 @@ export class QueryDatabaseCache {
       });
       operationCompleted = true;
     } catch (error) {
-      operationError = error;
+      operationError =
+        options.signal?.aborted === true && !(error instanceof KlopsiError)
+          ? new KlopsiError({
+              code: "QUERY_CANCELLED",
+              message: "The query was cancelled.",
+              exitCode: EXIT_CODES.QUERY_FAILURE,
+              cause: error,
+            })
+          : error;
     } finally {
       const failures: unknown[] = [];
       if (stage !== undefined) {
@@ -328,6 +348,25 @@ export class QueryDatabaseCache {
         ...(options.memoryLimit === undefined ? {} : { memoryLimit: options.memoryLimit }),
         ...(options.threads === undefined ? {} : { threads: options.threads }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }),
+    );
+    return { ...leased.value, cache: leased.cache, warnings: leased.warnings };
+  }
+
+  /** Profile every column of the staged `data` table with KLOPSI-owned SQL. */
+  async profile(
+    source: DataInput,
+    options: QueryDatabaseProfileOptions,
+  ): Promise<QueryDatabaseProfileResult> {
+    const leased = await this.withDatabase(source, options, async (databasePath) =>
+      profileStagedDatabase(this.options.runner, {
+        databasePath,
+        invocationDirectory: dirname(databasePath),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(options.memoryLimit === undefined ? {} : { memoryLimit: options.memoryLimit }),
+        ...(options.threads === undefined ? {} : { threads: options.threads }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.now === undefined ? {} : { now: options.now }),
       }),
     );
     return { ...leased.value, cache: leased.cache, warnings: leased.warnings };

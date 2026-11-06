@@ -1,17 +1,17 @@
 ---
 name: klopsi-analysis
-description: "Use when querying or converting bounded data, including ZIP, XML, JSON, XLSX, Parquet, or query exports."
+description: "Use when profiling, querying, or converting bounded data, including ZIP, XML, JSON, XLSX, Parquet, or query exports."
 ---
 
 # klopsi-analysis
 
 > **Prerequisite:** Read [klopsi-shared](../klopsi-shared/SKILL.md) before executing these commands.
 
-Analyze tabular inputs with bounded read-only SQL or convert supported formats. Generated for `klopsi` 0.0.2.
+Profile columns, analyze tabular inputs with bounded read-only SQL, or convert supported formats. Generated for `klopsi` 0.0.2.
 
 ## Workflow
 
-- Preview and validate input before running a bounded query.
+- Preview and validate input, then run `klopsi profile` to learn column types, nulls, and ranges before writing a bounded query.
 - Convert an input and then verify the generated provenance record.
 
 ## Capability guide
@@ -22,6 +22,12 @@ Analyze tabular inputs with bounded read-only SQL or convert supported formats. 
 - Use a resolved `--entry`, `--record-path`, or `--sheet` whenever ZIP, XML, or XLSX input is ambiguous.
 - PC-Axis is input-only: convert it to CSV, TSV, JSON, NDJSON, XLSX, or Parquet, never to PC-Axis.
 - In staged PC-Axis rows, keep `__code` fields as strings and interpret a source-symbol null as `value IS NULL` with the original token in `value__symbol`; do not confuse it with numeric zero.
+
+### Profile columns before querying
+
+- Run `klopsi profile <input> --json` to get one row per staged column with `type`, `count`, `nullCount`, `nullPercent`, `distinctApprox`, `min`, `max`, and numeric `mean` and `stddev`.
+- Use the reported column names and DuckDB types to write correctly quoted SQL; `min` and `max` are text so large integers stay exact, and `distinctApprox` is an estimate.
+- Profile shares query staging, cache, and time, memory, and thread bounds; it accepts the same `--sheet`, `--entry`, and `--record-path` selectors and fails with exit 7 on timeout or cancellation.
 
 ### Run bounded read-only SQL
 
@@ -39,6 +45,32 @@ Analyze tabular inputs with bounded read-only SQL or convert supported formats. 
 - Validate or inspect the converted result and use `provenance verify`; do not overwrite an existing destination without authorization.
 
 ## Commands
+
+### `profile`
+
+Summarize per-column statistics for tabular data.
+
+```sh
+klopsi profile <input> [options]
+```
+
+#### Arguments
+
+| Argument | Values | Description |
+| --- | --- | --- |
+| `<input>` | — | local path or canonical resource reference |
+
+#### Options
+
+| Option | Required | Values | Conflicts | Description |
+| --- | --- | --- | --- | --- |
+| `--timeout-ms <milliseconds>` | no | milliseconds | — | hard profile deadline |
+| `--sheet <name>` | no | name | — | XLSX sheet name |
+| `--entry <path>` | no | path | — | ZIP data entry path |
+| `--record-path <path>` | no | path | — | XML record element path |
+| `--allow-insecure-http` | no | — | — | allow HTTP for this invocation |
+| `--allow-private-network` | no | — | — | allow private network addresses for this invocation |
+
 
 ### `query`
 
