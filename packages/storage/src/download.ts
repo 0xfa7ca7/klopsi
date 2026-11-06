@@ -6,6 +6,19 @@ import { EXIT_CODES, KlopsiError, type FailureExitCode } from "@klopsi/domain";
 import { request, type Dispatcher } from "undici";
 import { CacheLock } from "./cache-lock.js";
 import { isPublicAddress } from "./ip-policy.js";
+import {
+  DEFAULT_DOWNLOAD_RETRIES,
+  DEFAULT_RETRY_BASE_DELAY_MS,
+  DEFAULT_RETRY_MAX_DELAY_MS,
+  abortableSleep,
+  backoffDelay,
+  isRetryableHttpStatus,
+  parseRetryAfter,
+  transientNetworkCode,
+  type DownloadRetryEvent,
+  type DownloadRetryOptions,
+  type RetrySleep,
+} from "./retry.js";
 import { SafeDispatcherFactory } from "./safe-dispatcher.js";
 
 export interface DownloadLimits {
@@ -14,6 +27,12 @@ export interface DownloadLimits {
   readonly maxRedirects?: number;
   readonly headersTimeoutMs?: number;
   readonly bodyTimeoutMs?: number;
+  /**
+   * Additional attempts after a transient failure (network error, per-attempt timeout, or HTTP
+   * 408/425/429/500/502/503/504). Defaults to 2 (three attempts in total); 0 disables retries.
+   * `timeoutMs` applies to each attempt.
+   */
+  readonly retries?: number;
 }
 export interface DownloadInput {
   readonly url: string;
@@ -35,12 +54,16 @@ export interface DownloadResult {
   readonly sha256: string;
   readonly etag?: string;
   readonly lastModified?: string;
+  /** Network attempts used to fetch the content, including the successful one. */
+  readonly attempts?: number;
 }
 export interface ProbeResult {
   readonly finalUrl: string;
   readonly redirectChain: readonly string[];
   readonly status: number;
   readonly headers: Readonly<Record<string, string | readonly string[]>>;
+  /** Network attempts used, including the final one. */
+  readonly attempts?: number;
 }
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "proxy-authorization"]);
 function failure(
@@ -171,17 +194,124 @@ async function digestRegularFile(
   }
 }
 
+export interface DownloaderOptions {
+  readonly retry?: DownloadRetryOptions;
+  /** Called before each backoff sleep; use it to surface retry warnings. */
+  readonly onRetry?: (event: DownloadRetryEvent) => void;
+}
+
+interface FetchedResponse {
+  response: Awaited<ReturnType<typeof request>>;
+  url: URL;
+  chain: string[];
+  dispatcher: Dispatcher;
+}
+
+interface StagedDownload {
+  readonly temp: string;
+  readonly url: URL;
+  readonly chain: readonly string[];
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly headers: Record<string, string | string[] | undefined>;
+}
+
+interface TransientFailure {
+  readonly reason: string;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+}
+
+const transientHttpFailures = new WeakMap<KlopsiError, TransientFailure>();
+
+function discardBody(response: FetchedResponse["response"]): void {
+  response.body.on("error", () => undefined);
+  response.body.destroy();
+}
+
+function httpError(response: FetchedResponse["response"], now: number): KlopsiError {
+  const status = response.statusCode;
+  const error = new KlopsiError({
+    code: "DOWNLOAD_HTTP_ERROR",
+    message: `The download returned HTTP ${status}.`,
+    exitCode: EXIT_CODES.PROVIDER_FAILURE,
+    context: { status },
+  });
+  if (isRetryableHttpStatus(status)) {
+    const retryAfterMs = parseRetryAfter(response.headers["retry-after"], now);
+    transientHttpFailures.set(error, {
+      reason: `HTTP ${status}`,
+      status,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    });
+  }
+  return error;
+}
+
+function networkFailure(error: unknown, timedOut: boolean): KlopsiError {
+  if (error instanceof KlopsiError) return error;
+  return failure(
+    "DOWNLOAD_FAILED",
+    timedOut ? "The download request timed out." : "The download request failed.",
+    EXIT_CODES.PROVIDER_FAILURE,
+    error,
+  );
+}
+
+function cancelled(cause: unknown): KlopsiError {
+  return failure(
+    "DOWNLOAD_CANCELLED",
+    "The download was cancelled.",
+    EXIT_CODES.PROVIDER_FAILURE,
+    cause,
+  );
+}
+
+function withAttempts(
+  error: unknown,
+  attempts: number,
+  extra: Readonly<Record<string, unknown>> = {},
+): unknown {
+  if (
+    !(error instanceof KlopsiError) ||
+    (error.code !== "DOWNLOAD_HTTP_ERROR" && error.code !== "DOWNLOAD_FAILED")
+  )
+    return error;
+  return new KlopsiError({
+    code: error.code,
+    message: error.message,
+    exitCode: error.exitCode,
+    ...(error.suggestion === undefined ? {} : { suggestion: error.suggestion }),
+    context: { ...error.context, attempts, ...extra },
+    ...(error.cause === undefined ? {} : { cause: error.cause }),
+  });
+}
+
 export class Downloader {
-  constructor(private readonly dispatchers = new SafeDispatcherFactory()) {}
+  private readonly baseDelayMs: number;
+  private readonly maxDelayMs: number;
+  private readonly random: () => number;
+  private readonly sleep: RetrySleep;
+  private readonly now: () => number;
+  private readonly onRetry: ((event: DownloadRetryEvent) => void) | undefined;
+
+  constructor(
+    private readonly dispatchers = new SafeDispatcherFactory(),
+    options: DownloaderOptions = {},
+  ) {
+    this.baseDelayMs = options.retry?.baseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+    this.maxDelayMs = options.retry?.maxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+    this.random = options.retry?.random ?? Math.random;
+    this.sleep = options.retry?.sleep ?? abortableSleep;
+    this.now = options.retry?.now ?? Date.now;
+    this.onRetry = options.onRetry;
+  }
+
   private async response(
     input: DownloadInput,
     method: "GET" | "HEAD",
-  ): Promise<{
-    response: Awaited<ReturnType<typeof request>>;
-    url: URL;
-    chain: string[];
-    dispatcher: Dispatcher;
-  }> {
+    timedOut: () => boolean,
+  ): Promise<FetchedResponse> {
     const allowHttp = input.allowInsecureHttp ?? false;
     const allowPrivate = input.allowPrivateNetwork ?? false;
     const maxRedirects = input.limits.maxRedirects ?? 5;
@@ -218,19 +348,13 @@ export class Downloader {
         await dispatcher.close();
         const forbidden = policyError(error);
         if (forbidden !== undefined) throw forbidden;
-        throw failure(
-          "DOWNLOAD_FAILED",
-          "The download request failed.",
-          EXIT_CODES.PROVIDER_FAILURE,
-          error,
-        );
+        throw networkFailure(error, timedOut());
       }
       const location = response.headers.location;
       const isRedirect =
         response.statusCode >= 300 && response.statusCode < 400 && typeof location === "string";
       if (!isRedirect) return { response, url, chain, dispatcher };
-      response.body.on("error", () => undefined);
-      response.body.destroy();
+      discardBody(response);
       await dispatcher.close();
       if (redirect >= maxRedirects)
         throw failure(
@@ -248,50 +372,138 @@ export class Downloader {
       url = next;
     }
   }
-  async probe(input: Omit<DownloadInput, "destination">): Promise<ProbeResult> {
-    const timeout = AbortSignal.timeout(input.limits.timeoutMs);
-    const signal = input.signal === undefined ? timeout : AbortSignal.any([input.signal, timeout]);
-    const { response, url, chain, dispatcher } = await this.response(
-      { ...input, destination: "", signal },
-      "HEAD",
-    );
-    try {
-      await response.body.dump();
-      return {
-        finalUrl: url.toString(),
-        redirectChain: chain,
-        status: response.statusCode,
-        headers: headersRecord(response.headers),
+
+  /**
+   * Runs idempotent attempts with bounded retries. Each attempt receives a fresh per-attempt
+   * timeout. Only transient failures (selected network errors, attempt timeouts, and retryable
+   * HTTP statuses) are retried; policy, size, integrity, and caller-abort failures are not.
+   */
+  private async withRetries<Result>(
+    input: Omit<DownloadInput, "destination">,
+    method: "GET" | "HEAD",
+    attempt: (signal: AbortSignal, timedOut: () => boolean) => Promise<Result>,
+    transientResult: (value: Result) => TransientFailure | undefined = () => undefined,
+  ): Promise<{ value: Result; attempts: number }> {
+    const retries = input.limits.retries ?? DEFAULT_DOWNLOAD_RETRIES;
+    const maxAttempts = Number.isSafeInteger(retries) && retries > 0 ? retries + 1 : 1;
+    const userSignal = input.signal;
+    for (let current = 1; ; current++) {
+      if (userSignal?.aborted) throw cancelled(userSignal.reason);
+      const timeout = AbortSignal.timeout(input.limits.timeoutMs);
+      const signal = userSignal === undefined ? timeout : AbortSignal.any([userSignal, timeout]);
+      const timedOut = () => timeout.aborted && userSignal?.aborted !== true;
+      let transient: TransientFailure | undefined;
+      let failed: { readonly error: unknown } | { readonly value: Result };
+      try {
+        const value = await attempt(signal, timedOut);
+        transient = transientResult(value);
+        if (transient === undefined) return { value, attempts: current };
+        failed = { value };
+      } catch (error) {
+        if (userSignal?.aborted) throw cancelled(error);
+        transient = this.classify(error, timedOut());
+        if (transient === undefined) throw withAttempts(error, current);
+        failed = { error };
+      }
+      const giveUp = (extra: Readonly<Record<string, unknown>> = {}) => {
+        if ("value" in failed) return { value: failed.value, attempts: current };
+        throw withAttempts(failed.error, current, extra);
       };
-    } finally {
-      await dispatcher.close();
+      if (current >= maxAttempts) return giveUp();
+      let delayMs: number;
+      if (transient.retryAfterMs !== undefined) {
+        if (transient.retryAfterMs > this.maxDelayMs)
+          return giveUp({ retryAfterMs: transient.retryAfterMs });
+        delayMs = transient.retryAfterMs;
+      } else {
+        delayMs = backoffDelay(current, this.baseDelayMs, this.maxDelayMs, this.random);
+      }
+      this.onRetry?.({
+        method,
+        origin: parseUrl(input.url).origin,
+        attempt: current,
+        maxAttempts,
+        delayMs,
+        reason: transient.reason,
+        ...(transient.status === undefined ? {} : { status: transient.status }),
+      });
+      try {
+        await this.sleep(delayMs, userSignal);
+      } catch (error) {
+        throw cancelled(error);
+      }
     }
   }
-  async download(input: DownloadInput): Promise<DownloadResult> {
-    const destination = resolve(input.destination);
-    const directory = dirname(destination);
-    const timeout = AbortSignal.timeout(input.limits.timeoutMs);
-    const signal = input.signal === undefined ? timeout : AbortSignal.any([input.signal, timeout]);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const lock = await CacheLock.acquire(directory, `download:${destination}`, {
-      signal,
-    });
+
+  private classify(error: unknown, timedOut: boolean): TransientFailure | undefined {
+    if (!(error instanceof KlopsiError)) return undefined;
+    const http = transientHttpFailures.get(error);
+    if (http !== undefined) return http;
+    if (error.code !== "DOWNLOAD_FAILED") return undefined;
+    if (timedOut) return { reason: "the request timed out" };
+    const code = transientNetworkCode(error);
+    return code === undefined ? undefined : { reason: `network error ${code}` };
+  }
+
+  async probe(input: Omit<DownloadInput, "destination">): Promise<ProbeResult> {
+    const { value, attempts } = await this.withRetries(
+      input,
+      "HEAD",
+      async (signal, timedOut) => {
+        const { response, url, chain, dispatcher } = await this.response(
+          { ...input, destination: "", signal },
+          "HEAD",
+          timedOut,
+        );
+        try {
+          try {
+            await response.body.dump();
+          } catch (error) {
+            throw networkFailure(error, timedOut());
+          }
+          return {
+            finalUrl: url.toString(),
+            redirectChain: chain,
+            status: response.statusCode,
+            headers: headersRecord(response.headers),
+          };
+        } finally {
+          await dispatcher.close();
+        }
+      },
+      (result) => {
+        if (!isRetryableHttpStatus(result.status)) return undefined;
+        const retryAfterMs = parseRetryAfter(result.headers["retry-after"], this.now());
+        return {
+          reason: `HTTP ${result.status}`,
+          status: result.status,
+          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+        };
+      },
+    );
+    return { ...value, attempts };
+  }
+
+  /** Streams one attempt into a fresh private temporary file; removes it on any failure. */
+  private async stage(
+    input: DownloadInput,
+    destination: string,
+    signal: AbortSignal,
+    timedOut: () => boolean,
+  ): Promise<StagedDownload> {
     const temp = `${destination}.part-${process.pid}-${randomUUID()}`;
-    let dispatcher: Dispatcher | undefined;
+    let fetched: FetchedResponse | undefined;
     let handle;
     try {
-      const fetched = await this.response({ ...input, destination, signal }, "GET");
-      dispatcher = fetched.dispatcher;
+      fetched = await this.response({ ...input, destination, signal }, "GET", timedOut);
       const { response, url, chain } = fetched;
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        response.body.on("error", () => undefined);
-        response.body.destroy();
-        throw failure("DOWNLOAD_HTTP_ERROR", `The download returned HTTP ${response.statusCode}.`);
+        discardBody(response);
+        throw httpError(response, this.now());
       }
       const declared = response.headers["content-length"];
       if (typeof declared === "string" && Number(declared) > input.limits.maxBytes) {
-        response.body.on("error", () => undefined);
-        response.body.destroy();
+        discardBody(response);
         throw failure(
           "DOWNLOAD_TOO_LARGE",
           "The download exceeds the byte limit.",
@@ -301,11 +513,19 @@ export class Downloader {
       handle = await open(temp, "wx", 0o600);
       const hash = createHash("sha256");
       let bytes = 0;
-      for await (const raw of response.body) {
-        const chunk = Buffer.from(raw);
+      const chunks = response.body[Symbol.asyncIterator]();
+      while (true) {
+        let next: IteratorResult<unknown>;
+        try {
+          next = await chunks.next();
+        } catch (error) {
+          throw networkFailure(error, timedOut());
+        }
+        if (next.done === true) break;
+        const chunk = Buffer.from(next.value as Uint8Array);
         bytes += chunk.length;
         if (bytes > input.limits.maxBytes) {
-          response.body.destroy();
+          discardBody(response);
           throw failure(
             "DOWNLOAD_TOO_LARGE",
             "The download exceeds the byte limit.",
@@ -318,7 +538,34 @@ export class Downloader {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      const sha256 = hash.digest("hex");
+      return { temp, url, chain, bytes, sha256: hash.digest("hex"), headers: response.headers };
+    } catch (error) {
+      if (fetched !== undefined) discardBody(fetched.response);
+      await handle?.close().catch(() => undefined);
+      await rm(temp, { force: true });
+      throw error;
+    } finally {
+      await fetched?.dispatcher.close().catch(() => undefined);
+    }
+  }
+
+  async download(input: DownloadInput): Promise<DownloadResult> {
+    const destination = resolve(input.destination);
+    const directory = dirname(destination);
+    const lockTimeout = AbortSignal.timeout(input.limits.timeoutMs);
+    const lockSignal =
+      input.signal === undefined ? lockTimeout : AbortSignal.any([input.signal, lockTimeout]);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const lock = await CacheLock.acquire(directory, `download:${destination}`, {
+      signal: lockSignal,
+    });
+    let staged: StagedDownload | undefined;
+    try {
+      const { value, attempts } = await this.withRetries(input, "GET", (signal, timedOut) =>
+        this.stage(input, destination, signal, timedOut),
+      );
+      staged = value;
+      const { temp, url, chain, bytes, sha256, headers } = staged;
       if (input.force) {
         try {
           const current = await lstat(destination);
@@ -361,21 +608,20 @@ export class Downloader {
         finalUrl: url.toString(),
         redirectChain: chain,
         bytes,
-        ...(typeof response.headers["content-type"] === "string"
-          ? { mediaType: response.headers["content-type"].split(";", 1)[0] }
+        ...(typeof headers["content-type"] === "string"
+          ? { mediaType: headers["content-type"].split(";", 1)[0] }
           : {}),
         sha256,
-        ...(typeof response.headers.etag === "string" ? { etag: response.headers.etag } : {}),
-        ...(typeof response.headers["last-modified"] === "string"
-          ? { lastModified: response.headers["last-modified"] }
+        ...(typeof headers.etag === "string" ? { etag: headers.etag } : {}),
+        ...(typeof headers["last-modified"] === "string"
+          ? { lastModified: headers["last-modified"] }
           : {}),
+        attempts,
       };
     } catch (error) {
-      await handle?.close().catch(() => undefined);
-      await rm(temp, { force: true });
+      if (staged !== undefined) await rm(staged.temp, { force: true });
       throw error;
     } finally {
-      await dispatcher?.close().catch(() => undefined);
       await lock.release();
     }
   }

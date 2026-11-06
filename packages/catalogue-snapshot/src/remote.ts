@@ -107,6 +107,9 @@ export class StrictHttpsReader {
         limits: {
           maxBytes,
           timeoutMs,
+          // Snapshot reads run under fixed end-to-end deadlines and fall back to live
+          // metadata, so they never multiply that budget with content-download retries.
+          retries: 0,
           ...(allowNotFound ? { maxRedirects: 0 } : {}),
         },
         ...(this.testOnlyDownloaderOptions.allowInsecureHttp === undefined

@@ -376,7 +376,7 @@ describe("Downloader", () => {
     await expect(
       new Downloader().download({
         ...localOptions(`${base}/error`, await destination("error-body")),
-        limits: { maxBytes: 100, timeoutMs: 500 },
+        limits: { maxBytes: 100, timeoutMs: 500, retries: 0 },
       }),
     ).rejects.toMatchObject({ code: "DOWNLOAD_HTTP_ERROR" });
   });
@@ -473,7 +473,12 @@ describe("Downloader", () => {
       response.end("hello");
     });
     const falsePath = await destination("false.txt");
-    await expect(new Downloader().download(localOptions(falseLength, falsePath))).rejects.toThrow();
+    await expect(
+      new Downloader().download({
+        ...localOptions(falseLength, falsePath),
+        limits: { maxBytes: 100, timeoutMs: 1_000, retries: 0 },
+      }),
+    ).rejects.toThrow();
     await expect(lstat(falsePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
