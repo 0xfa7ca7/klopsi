@@ -138,6 +138,42 @@ describe("configuration", () => {
     expect(config.query.rowLimit).toBe(40);
   });
 
+  it("defaults to two HTTP retries and layers file, env, and CLI values", async () => {
+    await expect(loadConfiguration(await fixtureSources())).resolves.toMatchObject({
+      http: { retries: 2 },
+    });
+    const layered = await loadConfiguration(
+      await fixtureSources({
+        user: { http: { retries: 5 } },
+        project: { http: { retries: 4 } },
+        env: { KLOPSI_HTTP_RETRIES: "3" },
+      }),
+    );
+    expect(layered.http).toMatchObject({ retries: 3, timeoutMs: 30_000 });
+    const disabled = await loadConfiguration(
+      await fixtureSources({ env: { KLOPSI_HTTP_RETRIES: "3" }, cli: { httpRetries: 0 } }),
+    );
+    expect(disabled.http.retries).toBe(0);
+    await expect(
+      loadConfiguration(await fixtureSources({ env: { KLOPSI_HTTP_RETRIES: "0" } })),
+    ).resolves.toMatchObject({ http: { retries: 0 } });
+  });
+
+  it.each([{ env: "-1" }, { env: "1.5" }, { env: "many" }, { file: -1 }, { file: 2.5 }])(
+    "rejects invalid HTTP retry counts %o",
+    async (value) => {
+      await expect(
+        loadConfiguration(
+          await fixtureSources(
+            "env" in value
+              ? { env: { KLOPSI_HTTP_RETRIES: value.env } }
+              : { project: { http: { retries: value.file } } },
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_CONFIGURATION", exitCode: 2 });
+    },
+  );
+
   it("does not create config directories while resolving paths", async () => {
     const root = await temporaryDirectory("klopsi-paths-");
     const home = join(root, "missing-home");

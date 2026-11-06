@@ -177,8 +177,10 @@ describe("CLI bootstrap options", () => {
         "--query-timeout-ms=400",
         "--duckdb-memory-limit=1GB",
         "--duckdb-threads=3",
+        "--http-retries=0",
       ]),
     ).toEqual({
+      httpRetries: 0,
       provider: "custom",
       output: "json",
       cacheDir: "/tmp/cache",
@@ -192,6 +194,16 @@ describe("CLI bootstrap options", () => {
       duckdbThreads: 3,
     });
     expect(requestedOutputFormat(["--output-format=json"])).toBe("json");
+  });
+
+  it("accepts nonnegative --http-retries and rejects other values", async () => {
+    expect(cliConfigurationFromArgv(["--http-retries", "4"])).toEqual({ httpRetries: 4 });
+    expect(cliConfigurationFromArgv(["--http-retries=-1"])).toEqual({});
+    const fixture = await fixtureIo();
+    await expect(runCli(["--http-retries", "0", "--help"], fixture.io)).resolves.toBe(0);
+    await expect(runCli(["--http-retries=-1", "--help"], fixture.io)).resolves.toBe(2);
+    await expect(runCli(["--http-retries=1.5", "--help"], fixture.io)).resolves.toBe(2);
+    await expect(runCli(["--http-retries=many", "--help"], fixture.io)).resolves.toBe(2);
   });
 
   it("rejects oversized and malformed DuckDB memory CLI values", async () => {

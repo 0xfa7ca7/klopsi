@@ -67,6 +67,9 @@ export const GLOBAL_OPTION_MANIFEST: readonly CommandOptionManifest[] = [
   option("--cache-dir <path>", "override cache directory"),
   option("--download-dir <path>", "override download directory"),
   option("--http-timeout-ms <number>", "HTTP timeout in milliseconds", { parser: "positive" }),
+  option("--http-retries <number>", "retries for transient download failures (0 disables)", {
+    parser: "nonnegative",
+  }),
   option("--max-download-bytes <number>", "maximum download size", { parser: "positive" }),
   option("--preview-row-limit <number>", "preview row limit", { parser: "positive" }),
   option("--query-row-limit <number>", "query row limit", { parser: "positive" }),

@@ -124,18 +124,20 @@ export function registerDownloadCommand(
         suggestion: "Create the directory first or omit --destination/--output.",
       });
     const results: unknown[] = [];
+    const attempts: Array<number | null> = [];
     const errors: unknown[] = [];
     for (const selection of uniqueSelections) {
       try {
-        results.push(
-          await client.downloads.resource(selection.id, {
-            ...(selection.providerId === undefined ? {} : { providerId: selection.providerId }),
-            ...(destination === undefined ? {} : { destination }),
-            force: options.force ?? false,
-            allowInsecureHttp: options.allowInsecureHttp ?? false,
-            allowPrivateNetwork: options.allowPrivateNetwork ?? false,
-          }),
-        );
+        // Network attempts are reported as rendering metadata so result records keep their shape.
+        const { attempts: used, ...result } = await client.downloads.resource(selection.id, {
+          ...(selection.providerId === undefined ? {} : { providerId: selection.providerId }),
+          ...(destination === undefined ? {} : { destination }),
+          force: options.force ?? false,
+          allowInsecureHttp: options.allowInsecureHttp ?? false,
+          allowPrivateNetwork: options.allowPrivateNetwork ?? false,
+        });
+        results.push(result);
+        attempts.push(used ?? null);
       } catch (error) {
         errors.push(error);
       }
@@ -155,7 +157,16 @@ export function registerDownloadCommand(
         });
       throw errors[0];
     }
-    if (results.length > 0)
-      context.renderer?.write(uniqueSelections.length === 1 ? results[0] : results);
+    if (results.length > 0) {
+      const single = uniqueSelections.length === 1;
+      const meta = single
+        ? attempts[0] === null
+          ? {}
+          : { attempts: attempts[0] }
+        : attempts.every((value) => value === null)
+          ? {}
+          : { attempts };
+      context.renderer?.write(single ? results[0] : results, meta);
+    }
   });
 }

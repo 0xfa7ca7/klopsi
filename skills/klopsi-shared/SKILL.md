@@ -66,6 +66,7 @@ Use the installed CLI as the source of truth when its help differs from generate
 | `--cache-dir <path>` | path | — | override cache directory |
 | `--download-dir <path>` | path | — | override download directory |
 | `--http-timeout-ms <number>` | number | — | HTTP timeout in milliseconds |
+| `--http-retries <number>` | number | — | retries for transient download failures (0 disables) |
 | `--max-download-bytes <number>` | number | — | maximum download size |
 | `--preview-row-limit <number>` | number | — | preview row limit |
 | `--query-row-limit <number>` | number | — | query row limit |

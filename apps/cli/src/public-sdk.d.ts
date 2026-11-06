@@ -366,6 +366,8 @@ interface DownloadLimits {
   readonly maxRedirects?: number;
   readonly headersTimeoutMs?: number;
   readonly bodyTimeoutMs?: number;
+  /** Additional attempts after transient failures; defaults to 2, and 0 disables retries. */
+  readonly retries?: number;
 }
 interface DownloadInput {
   readonly url: string;
@@ -384,12 +386,16 @@ interface DownloadResult {
   readonly bytes: number;
   readonly mediaType?: string;
   readonly sha256: string;
+  /** Network attempts used, including the successful one. */
+  readonly attempts?: number;
 }
 interface ProbeResult {
   readonly finalUrl: string;
   readonly redirectChain: readonly string[];
   readonly status: number;
   readonly headers: Readonly<Record<string, string | readonly string[]>>;
+  /** Network attempts used, including the final one. */
+  readonly attempts?: number;
 }
 interface ResourceDownloadOptions {
   readonly providerId?: string;
