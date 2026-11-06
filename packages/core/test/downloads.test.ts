@@ -217,6 +217,8 @@ it("uses cached validators for a conditional request and reuses a 304 object", a
         "if-none-match": '"cached"',
         "if-modified-since": "Sat, 11 Jul 2026 10:00:00 GMT",
       },
+      // The conditional probe must not stack its own retry budget on top of the GET.
+      limits: { maxBytes: 100, timeoutMs: 100, retries: 0 },
     }),
   );
   expect(download).not.toHaveBeenCalled();

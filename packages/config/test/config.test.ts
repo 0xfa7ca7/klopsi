@@ -159,20 +159,34 @@ describe("configuration", () => {
     ).resolves.toMatchObject({ http: { retries: 0 } });
   });
 
-  it.each([{ env: "-1" }, { env: "1.5" }, { env: "many" }, { file: -1 }, { file: 2.5 }])(
-    "rejects invalid HTTP retry counts %o",
-    async (value) => {
-      await expect(
-        loadConfiguration(
-          await fixtureSources(
-            "env" in value
-              ? { env: { KLOPSI_HTTP_RETRIES: value.env } }
+  it("accepts at most ten HTTP retries", async () => {
+    await expect(
+      loadConfiguration(await fixtureSources({ env: { KLOPSI_HTTP_RETRIES: "10" } })),
+    ).resolves.toMatchObject({ http: { retries: 10 } });
+  });
+
+  it.each([
+    { env: "-1" },
+    { env: "1.5" },
+    { env: "many" },
+    { env: "11" },
+    { file: -1 },
+    { file: 2.5 },
+    { file: 11 },
+    { cli: 11 },
+  ])("rejects invalid HTTP retry counts %o", async (value) => {
+    await expect(
+      loadConfiguration(
+        await fixtureSources(
+          "env" in value
+            ? { env: { KLOPSI_HTTP_RETRIES: value.env } }
+            : "cli" in value
+              ? { cli: { httpRetries: value.cli } }
               : { project: { http: { retries: value.file } } },
-          ),
         ),
-      ).rejects.toMatchObject({ code: "INVALID_CONFIGURATION", exitCode: 2 });
-    },
-  );
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_CONFIGURATION", exitCode: 2 });
+  });
 
   it("does not create config directories while resolving paths", async () => {
     const root = await temporaryDirectory("klopsi-paths-");

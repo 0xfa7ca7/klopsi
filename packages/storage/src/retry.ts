@@ -68,7 +68,68 @@ export function transientNetworkCode(error: unknown): string | undefined {
   return undefined;
 }
 
-/** Parses `Retry-After` as delta-seconds or an HTTP-date, returning milliseconds. */
+const MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec";
+const MONTH_INDEX = new Map(MONTHS.split("|").map((name, index) => [name, index]));
+// RFC 9110 section 5.6.7: IMF-fixdate plus the obsolete RFC 850 and asctime forms.
+const IMF_FIXDATE = new RegExp(
+  `^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\\d{2}) (${MONTHS}) (\\d{4}) (\\d{2}):(\\d{2}):(\\d{2}) GMT$`,
+  "u",
+);
+const RFC850_DATE = new RegExp(
+  `^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (\\d{2})-(${MONTHS})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) GMT$`,
+  "u",
+);
+const ASCTIME_DATE = new RegExp(
+  `^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (${MONTHS}) ([ \\d]\\d) (\\d{2}):(\\d{2}):(\\d{2}) (\\d{4})$`,
+  "u",
+);
+
+function utc(
+  year: number,
+  month: string,
+  day: string,
+  hour: string,
+  minute: string,
+  second: string,
+): number | undefined {
+  const monthIndex = MONTH_INDEX.get(month)!;
+  const parts = [Number(day.trim()), Number(hour), Number(minute), Number(second)] as const;
+  const time = Date.UTC(year, monthIndex, ...parts);
+  const date = new Date(time);
+  // Reject out-of-range components that Date.UTC would silently roll over.
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== monthIndex ||
+    date.getUTCDate() !== parts[0] ||
+    date.getUTCHours() !== parts[1] ||
+    date.getUTCMinutes() !== parts[2] ||
+    date.getUTCSeconds() !== parts[3]
+  )
+    return undefined;
+  return time;
+}
+
+function parseHttpDate(value: string, now: number): number | undefined {
+  let match = IMF_FIXDATE.exec(value);
+  if (match !== null)
+    return utc(Number(match[3]), match[2]!, match[1]!, match[4]!, match[5]!, match[6]!);
+  match = RFC850_DATE.exec(value);
+  if (match !== null) {
+    // Two-digit years more than 50 years in the future denote the previous century.
+    let year = 2000 + Number(match[3]);
+    if (year > new Date(now).getUTCFullYear() + 50) year -= 100;
+    return utc(year, match[2]!, match[1]!, match[4]!, match[5]!, match[6]!);
+  }
+  match = ASCTIME_DATE.exec(value);
+  if (match !== null)
+    return utc(Number(match[6]), match[1]!, match[2]!, match[3]!, match[4]!, match[5]!);
+  return undefined;
+}
+
+/**
+ * Parses `Retry-After` strictly as delta-seconds or an RFC 9110 HTTP-date, returning
+ * milliseconds. Anything else yields `undefined` so callers fall back to jittered backoff.
+ */
 export function parseRetryAfter(
   value: string | readonly string[] | undefined | null,
   now: number = Date.now(),
@@ -76,9 +137,8 @@ export function parseRetryAfter(
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   if (/^\d+$/u.test(trimmed)) return Number(trimmed) * 1_000;
-  if (!/[A-Za-z]/u.test(trimmed)) return undefined;
-  const date = Date.parse(trimmed);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
+  const date = parseHttpDate(trimmed, now);
+  return date === undefined ? undefined : Math.max(0, date - now);
 }
 
 /** Full-jitter exponential backoff: uniform in `[0, min(max, base * 2^(attempt-1)))`. */

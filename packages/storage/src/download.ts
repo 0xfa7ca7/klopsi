@@ -277,7 +277,7 @@ function withAttempts(
     (error.code !== "DOWNLOAD_HTTP_ERROR" && error.code !== "DOWNLOAD_FAILED")
   )
     return error;
-  return new KlopsiError({
+  const annotated = new KlopsiError({
     code: error.code,
     message: error.message,
     exitCode: error.exitCode,
@@ -285,6 +285,9 @@ function withAttempts(
     context: { ...error.context, attempts, ...extra },
     ...(error.cause === undefined ? {} : { cause: error.cause }),
   });
+  // Keep the stack of the original failure site rather than this annotation helper.
+  if (error.stack !== undefined) annotated.stack = error.stack;
+  return annotated;
 }
 
 export class Downloader {
@@ -311,6 +314,7 @@ export class Downloader {
     input: DownloadInput,
     method: "GET" | "HEAD",
     timedOut: () => boolean,
+    onRequest: (url: URL) => void = () => undefined,
   ): Promise<FetchedResponse> {
     const allowHttp = input.allowInsecureHttp ?? false;
     const allowPrivate = input.allowPrivateNetwork ?? false;
@@ -333,6 +337,7 @@ export class Downloader {
     };
     for (let redirect = 0; ; redirect++) {
       chain.push(url.toString());
+      onRequest(url);
       const dispatcher = this.dispatchers.create(url, allowPrivate);
       let response;
       try {
@@ -381,7 +386,11 @@ export class Downloader {
   private async withRetries<Result>(
     input: Omit<DownloadInput, "destination">,
     method: "GET" | "HEAD",
-    attempt: (signal: AbortSignal, timedOut: () => boolean) => Promise<Result>,
+    attempt: (
+      signal: AbortSignal,
+      timedOut: () => boolean,
+      onRequest: (url: URL) => void,
+    ) => Promise<Result>,
     transientResult: (value: Result) => TransientFailure | undefined = () => undefined,
   ): Promise<{ value: Result; attempts: number }> {
     const retries = input.limits.retries ?? DEFAULT_DOWNLOAD_RETRIES;
@@ -394,8 +403,12 @@ export class Downloader {
       const timedOut = () => timeout.aborted && userSignal?.aborted !== true;
       let transient: TransientFailure | undefined;
       let failed: { readonly error: unknown } | { readonly value: Result };
+      // The origin last contacted in this attempt, which follows redirects.
+      let origin = parseUrl(input.url).origin;
       try {
-        const value = await attempt(signal, timedOut);
+        const value = await attempt(signal, timedOut, (url) => {
+          origin = url.origin;
+        });
         transient = transientResult(value);
         if (transient === undefined) return { value, attempts: current };
         failed = { value };
@@ -410,17 +423,16 @@ export class Downloader {
         throw withAttempts(failed.error, current, extra);
       };
       if (current >= maxAttempts) return giveUp();
-      let delayMs: number;
-      if (transient.retryAfterMs !== undefined) {
-        if (transient.retryAfterMs > this.maxDelayMs)
-          return giveUp({ retryAfterMs: transient.retryAfterMs });
-        delayMs = transient.retryAfterMs;
-      } else {
-        delayMs = backoffDelay(current, this.baseDelayMs, this.maxDelayMs, this.random);
-      }
+      if (transient.retryAfterMs !== undefined && transient.retryAfterMs > this.maxDelayMs)
+        return giveUp({ retryAfterMs: transient.retryAfterMs });
+      // A zero or past Retry-After never shortens the jittered backoff.
+      const delayMs = Math.max(
+        transient.retryAfterMs ?? 0,
+        backoffDelay(current, this.baseDelayMs, this.maxDelayMs, this.random),
+      );
       this.onRetry?.({
         method,
-        origin: parseUrl(input.url).origin,
+        origin,
         attempt: current,
         maxAttempts,
         delayMs,
@@ -449,11 +461,12 @@ export class Downloader {
     const { value, attempts } = await this.withRetries(
       input,
       "HEAD",
-      async (signal, timedOut) => {
+      async (signal, timedOut, onRequest) => {
         const { response, url, chain, dispatcher } = await this.response(
           { ...input, destination: "", signal },
           "HEAD",
           timedOut,
+          onRequest,
         );
         try {
           try {
@@ -490,12 +503,13 @@ export class Downloader {
     destination: string,
     signal: AbortSignal,
     timedOut: () => boolean,
+    onRequest: (url: URL) => void,
   ): Promise<StagedDownload> {
     const temp = `${destination}.part-${process.pid}-${randomUUID()}`;
     let fetched: FetchedResponse | undefined;
     let handle;
     try {
-      fetched = await this.response({ ...input, destination, signal }, "GET", timedOut);
+      fetched = await this.response({ ...input, destination, signal }, "GET", timedOut, onRequest);
       const { response, url, chain } = fetched;
       if (response.statusCode < 200 || response.statusCode >= 300) {
         discardBody(response);
@@ -556,13 +570,22 @@ export class Downloader {
     const lockSignal =
       input.signal === undefined ? lockTimeout : AbortSignal.any([input.signal, lockTimeout]);
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    const lock = await CacheLock.acquire(directory, `download:${destination}`, {
-      signal: lockSignal,
-    });
+    let lock: CacheLock;
+    try {
+      lock = await CacheLock.acquire(directory, `download:${destination}`, {
+        signal: lockSignal,
+      });
+    } catch (error) {
+      if (input.signal?.aborted === true) throw cancelled(error);
+      throw error;
+    }
     let staged: StagedDownload | undefined;
     try {
-      const { value, attempts } = await this.withRetries(input, "GET", (signal, timedOut) =>
-        this.stage(input, destination, signal, timedOut),
+      const { value, attempts } = await this.withRetries(
+        input,
+        "GET",
+        (signal, timedOut, onRequest) =>
+          this.stage(input, destination, signal, timedOut, onRequest),
       );
       staged = value;
       const { temp, url, chain, bytes, sha256, headers } = staged;

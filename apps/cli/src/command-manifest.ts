@@ -1,7 +1,7 @@
 import { duckDbMemoryLimitBytes } from "@klopsi/domain";
 import { Argument, Command, InvalidArgumentError, Option } from "commander";
 
-type ParserKind = "positive" | "nonnegative" | "collect" | "duckdb-memory";
+type ParserKind = "positive" | "nonnegative" | "http-retries" | "collect" | "duckdb-memory";
 
 export interface CommandOptionManifest {
   readonly flags: string;
@@ -68,7 +68,7 @@ export const GLOBAL_OPTION_MANIFEST: readonly CommandOptionManifest[] = [
   option("--download-dir <path>", "override download directory"),
   option("--http-timeout-ms <number>", "HTTP timeout in milliseconds", { parser: "positive" }),
   option("--http-retries <number>", "retries for transient download failures (0 disables)", {
-    parser: "nonnegative",
+    parser: "http-retries",
   }),
   option("--max-download-bytes <number>", "maximum download size", { parser: "positive" }),
   option("--preview-row-limit <number>", "preview row limit", { parser: "positive" }),
@@ -400,6 +400,15 @@ function parseNonnegative(value: string): number {
   return parsed;
 }
 
+const MAX_HTTP_RETRIES = 10;
+
+function parseHttpRetries(value: string): number {
+  const parsed = parseNonnegative(value);
+  if (parsed > MAX_HTTP_RETRIES)
+    throw new InvalidArgumentError(`must be at most ${MAX_HTTP_RETRIES}`);
+  return parsed;
+}
+
 function collect(value: string, previous: readonly string[]): readonly string[] {
   return [...previous, value];
 }
@@ -418,6 +427,7 @@ function commanderOption(specification: CommandOptionManifest): Option {
   if (specification.mandatory === true) result = result.makeOptionMandatory();
   if (specification.parser === "positive") result = result.argParser(parsePositive);
   if (specification.parser === "nonnegative") result = result.argParser(parseNonnegative);
+  if (specification.parser === "http-retries") result = result.argParser(parseHttpRetries);
   if (specification.parser === "collect") result = result.argParser(collect);
   if (specification.parser === "duckdb-memory") result = result.argParser(parseDuckDbMemory);
   if (specification.defaultValue !== undefined) result = result.default(specification.defaultValue);

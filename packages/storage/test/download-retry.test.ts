@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  CacheLock,
   DEFAULT_DOWNLOAD_RETRIES,
   Downloader,
   SafeDispatcherFactory,
@@ -101,12 +102,24 @@ describe("parseRetryAfter", () => {
     expect(parseRetryAfter("7", now)).toBe(7_000);
     expect(parseRetryAfter("Thu, 01 Jan 2026 00:00:05 GMT", now)).toBe(5_000);
     expect(parseRetryAfter("Wed, 31 Dec 2025 23:59:00 GMT", now)).toBe(0);
+    expect(parseRetryAfter("Thursday, 01-Jan-26 00:00:09 GMT", now)).toBe(9_000);
+    expect(parseRetryAfter("Thu Jan  1 00:00:04 2026", now)).toBe(4_000);
   });
   it("ignores missing and malformed values", () => {
     expect(parseRetryAfter(undefined, now)).toBeUndefined();
     expect(parseRetryAfter("soon", now)).toBeUndefined();
     expect(parseRetryAfter("-1", now)).toBeUndefined();
     expect(parseRetryAfter(["1", "2"], now)).toBeUndefined();
+    for (const lenient of [
+      "garbage 99",
+      "2026-01-01T00:00:05Z",
+      "Thu, 01 Jan 2026 00:00:05",
+      "01 Jan 2026 00:00:05 GMT",
+      "Thu, 1 Jan 2026 00:00:05 GMT",
+      "Thu, 01 Foo 2026 00:00:05 GMT",
+      "1.5",
+    ])
+      expect(parseRetryAfter(lenient, now), lenient).toBeUndefined();
   });
 });
 
@@ -276,6 +289,54 @@ describe("Downloader retries", () => {
     });
     expect(large.count()).toBe(1);
     expect(events).toEqual([]);
+  });
+
+  it("never waits less than jittered backoff for a zero, past, or malformed Retry-After", async () => {
+    for (const value of ["0", "Wed, 31 Dec 2025 23:00:00 GMT", "garbage 99"]) {
+      const server = await sequence([status(503, { "retry-after": value }), ok("hello")]);
+      const { downloader, sleeps } = harness(() => 0.5);
+      await downloader.download(local(server.url, await destination()));
+      expect(sleeps, value).toEqual([250]);
+    }
+  });
+
+  it("reports the origin that actually failed after a redirect", async () => {
+    const target = await sequence([status(503), ok("hello")]);
+    const source = await sequence([
+      (_request, response) => response.writeHead(302, { location: target.url }).end(),
+    ]);
+    const { downloader, events } = harness();
+    await downloader.download(local(source.url, await destination()));
+    expect(events).toEqual([expect.objectContaining({ origin: new URL(target.url).origin })]);
+    expect(new URL(target.url).origin).not.toBe(new URL(source.url).origin);
+  });
+
+  it("preserves the original stack when annotating the final error", async () => {
+    const server = await sequence([status(503)]);
+    const error = await harness()
+      .downloader.download(local(server.url, await destination()))
+      .catch((caught: unknown) => caught as Error);
+    expect(error).toMatchObject({ code: "DOWNLOAD_HTTP_ERROR", context: { attempts: 3 } });
+    expect(error.stack).toContain("httpError");
+  });
+
+  it("maps a caller abort while waiting for the destination lock to DOWNLOAD_CANCELLED", async () => {
+    const path = await destination("locked");
+    const lock = await CacheLock.acquire(join(path, ".."), `download:${path}`);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    try {
+      await expect(
+        new Downloader().download({
+          url: "https://never.test/",
+          destination: path,
+          signal: controller.signal,
+          limits: { maxBytes: 10, timeoutMs: 5_000 },
+        }),
+      ).rejects.toMatchObject({ code: "DOWNLOAD_CANCELLED", exitCode: 4 });
+    } finally {
+      await lock.release();
+    }
   });
 
   it("honours Retry-After seconds and HTTP dates", async () => {

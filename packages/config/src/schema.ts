@@ -12,7 +12,7 @@ const pathsSchema = z.strictObject({
 const httpSchema = z.strictObject({
   timeoutMs: z.number().int().positive(),
   maxDownloadBytes: z.number().int().positive(),
-  retries: z.number().int().nonnegative(),
+  retries: z.number().int().nonnegative().max(10),
 });
 
 const previewSchema = z.strictObject({
