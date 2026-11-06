@@ -23,6 +23,14 @@ export type {
 export { DataEngine, inferredType } from "./inspect.js";
 export { QueryPolicy } from "./query-policy.js";
 export { DuckDbQueryRunner } from "./query.js";
+export { buildProfileBatches, profileStagedDatabase, PROFILE_SCHEMA_SQL } from "./profile.js";
+export type {
+  ColumnProfile,
+  ProfileBatch,
+  ProfileColumn,
+  ProfileExecutionOptions,
+  ProfileResult,
+} from "./profile.js";
 export { stageTabularInput, verifyStagedDatabase } from "./tabular-stage.js";
 export type { TabularStage } from "./tabular-stage.js";
 export { executeQueryWorker, startQueryWorker } from "./query-worker.js";

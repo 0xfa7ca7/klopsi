@@ -263,6 +263,19 @@ DATA=7;`,
     ).rejects.toMatchObject({ code: "QUERY_OUTPUT_LIMIT", exitCode: 7 });
   });
 
+  it("delivers results larger than one IPC write before the worker disconnects", async () => {
+    const runner = new DuckDbQueryRunner({
+      workerPath: new URL("./fixtures/query-worker-source-entry.ts", import.meta.url),
+    });
+    const result = await runner.execute({
+      input,
+      sql: "SELECT repeat('x', 100) AS s FROM range(5000)",
+      rowLimit: 5_000,
+    });
+    expect(result.returnedCount).toBe(5_000);
+    expect(result.truncated).toBe(false);
+  });
+
   it("does not modify the trusted input", async () => {
     const beforeBytes = await readFile(input);
     const before = await stat(input);

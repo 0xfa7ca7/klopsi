@@ -1,6 +1,8 @@
 export { KlopsiClient, ProviderRegistry } from "@klopsi/core";
 export type {
   KlopsiClientOptions,
+  ProfileServiceOptions,
+  ProfileServiceResult,
   QueryCacheMetadata,
   QueryCacheStatus,
   QueryCacheWarning,
@@ -19,7 +21,7 @@ export type {
   PcAxisLimits,
   XmlLimits,
 } from "@klopsi/core";
-export type { DataPreview, SupportedInputFormat } from "@klopsi/data-engine";
+export type { ColumnProfile, DataPreview, SupportedInputFormat } from "@klopsi/data-engine";
 export type {
   CanonicalReference,
   Configuration,

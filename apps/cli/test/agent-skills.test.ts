@@ -49,7 +49,13 @@ const EXPECTED_DATA_CAPABILITY_IDS = {
   ],
   "klopsi-download": ["target-resolution", "destination-strategy", "partial-results"],
   "klopsi-validation": ["validation-mode", "structured-selectors", "failure-recovery"],
-  "klopsi-analysis": ["supported-inputs", "bounded-query", "query-export", "safe-conversion"],
+  "klopsi-analysis": [
+    "supported-inputs",
+    "column-profile",
+    "bounded-query",
+    "query-export",
+    "safe-conversion",
+  ],
   "klopsi-provenance": ["record-inspection", "integrity-verification"],
 } as const;
 

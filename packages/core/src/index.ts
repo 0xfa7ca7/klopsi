@@ -11,6 +11,8 @@ export { ConversionService } from "./conversions.js";
 export type { ConversionServiceOptions } from "./conversions.js";
 export { QueryService } from "./queries.js";
 export type {
+  ProfileServiceOptions,
+  ProfileServiceResult,
   QueryDatabaseServiceOptions,
   QueryDatabaseServiceResult,
   QueryServiceOptions,
@@ -26,6 +28,8 @@ export type {
   QueryDatabaseLeaseResult,
   QueryDatabaseMetadata,
   QueryDatabasePreparationOptions,
+  QueryDatabaseProfileOptions,
+  QueryDatabaseProfileResult,
   QueryDatabaseResult,
   QueryDatabaseWarning,
 } from "./query-database-cache.js";
