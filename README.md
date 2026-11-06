@@ -135,23 +135,23 @@ Run `klopsi --help` or read the [complete command reference](docs/commands.md) f
 
 ## Command overview
 
-| Goal                          | Command                                                         |
-| ----------------------------- | --------------------------------------------------------------- |
-| Search the catalogue          | `klopsi search [text]`                                          |
-| List datasets quickly         | `klopsi dataset list`                                           |
-| Inspect a dataset             | `klopsi dataset show <id>`                                      |
-| List dataset resources        | `klopsi dataset resources <id>`                                 |
-| Inspect or preview a resource | `klopsi resource show <id>` / `klopsi resource preview <input>` |
-| Download data                 | `klopsi download <ids...>`                                      |
-| Validate data or metadata     | `klopsi validate <input>`                                       |
-| Query tabular data            | `klopsi query <input> --sql <statement>`                        |
-| Explore data in DuckDB UI     | `klopsi duckdb open <input>`                                    |
-| Convert formats               | `klopsi convert <input> --to <format> --output <path>`          |
-| Verify provenance             | `klopsi provenance verify <path>`                               |
-| Inspect local state           | `klopsi cache info` / `klopsi config list`                      |
-| Diagnose the installation     | `klopsi doctor`                                                 |
-| Generate shell completion     | `klopsi completion <bash\|zsh\|fish>`                           |
-| Set up detected AI agents     | `klopsi agent setup`                                            |
+| Goal                          | Command                                                          |
+| ----------------------------- | ---------------------------------------------------------------- |
+| Search the catalogue          | `klopsi search [text]`                                           |
+| List datasets quickly         | `klopsi dataset list`                                            |
+| Inspect a dataset             | `klopsi dataset show <id>`                                       |
+| List dataset resources        | `klopsi dataset resources <id>`                                  |
+| Inspect or preview a resource | `klopsi resource show <id>` / `klopsi resource preview <input>`  |
+| Download data                 | `klopsi download <ids...>`                                       |
+| Validate data or metadata     | `klopsi validate <input>`                                        |
+| Query tabular data            | `klopsi query <input> --sql <statement> \| --sql-file <path\|->` |
+| Explore data in DuckDB UI     | `klopsi duckdb open <input>`                                     |
+| Convert formats               | `klopsi convert <input> --to <format> --output <path>`           |
+| Verify provenance             | `klopsi provenance verify <path>`                                |
+| Inspect local state           | `klopsi cache info` / `klopsi config list`                       |
+| Diagnose the installation     | `klopsi doctor`                                                  |
+| Generate shell completion     | `klopsi completion <bash\|zsh\|fish>`                            |
+| Set up detected AI agents     | `klopsi agent setup`                                             |
 
 `klopsi dataset list` reads a compact, centrally published catalogue snapshot by default. Use `--refresh` to check for a current snapshot or `--live` to query OPSI directly. The command never silently falls back to a live query. See the [catalogue service guide](docs/catalogue-service.md) for details.
 

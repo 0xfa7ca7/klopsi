@@ -124,5 +124,11 @@ export async function readSqlFile(path: string, options: SqlFileOptions): Promis
     path === "-"
       ? await readStdin(options.stdin)
       : await readRegularFile(resolve(options.cwd ?? process.cwd(), path));
-  return decode(bytes);
+  const sql = decode(bytes);
+  if (sql.trim().length === 0)
+    throw invalid(
+      path === "-" ? "Standard input contained no SQL." : "The SQL file contains no SQL.",
+      path === "-" ? undefined : { path },
+    );
+  return sql;
 }

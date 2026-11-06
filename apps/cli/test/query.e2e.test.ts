@@ -240,6 +240,34 @@ describe("query CLI SQL files and parameters", () => {
     await expect(cli(["query", input, "--sql-file", "write.sql", "--json"])).resolves.toMatchObject(
       { exitCode: 7, json: { error: { code: "QUERY_FORBIDDEN" } } },
     );
+    await writeFile(join(home, "blank.sql"), "\n  \n");
+    await expect(cli(["query", input, "--sql-file", "blank.sql", "--json"])).resolves.toMatchObject(
+      { exitCode: 2, json: { error: { code: "QUERY_SQL_FILE_INVALID" } } },
+    );
+    await expect(
+      cli(["query", input, "--sql-file", "-", "--json"], {}, "   \n"),
+    ).resolves.toMatchObject({ exitCode: 2, json: { error: { code: "QUERY_SQL_FILE_INVALID" } } });
+  });
+
+  it("reports mixed named and positional placeholders with exit 2", async () => {
+    await expect(
+      cli(["query", input, "--sql", "SELECT $a AS a, ? AS b", "--param", "a=x", "--json"]),
+    ).resolves.toMatchObject({ exitCode: 2, json: { error: { code: "QUERY_PARAM_INVALID" } } });
+  });
+
+  it("does not echo bound text values in DuckDB errors", async () => {
+    const result = await cli([
+      "query",
+      input,
+      "--sql",
+      "SELECT CAST($token AS INTEGER) AS v",
+      "--param",
+      "token=secretval",
+      "--json",
+    ]);
+    expect(result).toMatchObject({ exitCode: 7 });
+    expect(result.stdout + result.stderr).not.toContain("secretval");
+    expect(result.stdout).toContain("<param:token>");
   });
 
   it("binds repeatable named parameters and reports them in meta", async () => {

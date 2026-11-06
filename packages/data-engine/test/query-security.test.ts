@@ -526,4 +526,38 @@ describe("DuckDbQueryRunner named parameters", () => {
       }),
     ).rejects.toMatchObject({ code: "QUERY_FORBIDDEN", exitCode: 7 });
   });
+
+  it("reports mixed named and positional placeholders with exit 2", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: "SELECT $a AS a, ? AS b",
+        parameters: [{ name: "a", type: "varchar", value: "x" }],
+      }),
+    ).rejects.toMatchObject({ code: "QUERY_PARAM_INVALID", exitCode: 2 });
+  });
+
+  it("redacts bound text values from DuckDB error messages", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    let error: unknown;
+    try {
+      await runner.execute({
+        input,
+        sql: "SELECT CAST($token AS INTEGER) AS v, $short AS s",
+        parameters: [
+          { name: "token", type: "varchar", value: "secretval" },
+          { name: "short", type: "varchar", value: "a" },
+        ],
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ exitCode: 7 });
+    const message = (error as Error).message;
+    expect(message).not.toContain("secretval");
+    expect(message).toContain("'<param:token>'");
+    expect(message).toContain("Could not convert string");
+    expect(JSON.stringify(error)).not.toContain("secretval");
+  });
 });

@@ -73,10 +73,35 @@ describe("readSqlFile", () => {
   });
 
   it("accepts a file exactly at the limit", async () => {
-    await writeFile(join(directory, "edge.sql"), Buffer.alloc(MAX_SQL_FILE_BYTES, 0x20));
+    const edge = Buffer.alloc(MAX_SQL_FILE_BYTES, 0x20);
+    edge.write("SELECT 1");
+    await writeFile(join(directory, "edge.sql"), edge);
     await expect(readSqlFile(join(directory, "edge.sql"), {})).resolves.toHaveLength(
       MAX_SQL_FILE_BYTES,
     );
+  });
+
+  it.each([
+    ["empty", Buffer.alloc(0)],
+    ["whitespace", Buffer.from(" \n\t\r\n ")],
+    ["BOM only", Buffer.from([0xef, 0xbb, 0xbf, 0x0a])],
+  ])("rejects an %s SQL file", async (_label, content) => {
+    await writeFile(join(directory, "blank.sql"), content);
+    await expect(readSqlFile(join(directory, "blank.sql"), {})).rejects.toMatchObject({
+      code: "QUERY_SQL_FILE_INVALID",
+      exitCode: 2,
+    });
+  });
+
+  it("rejects empty stdin", async () => {
+    await expect(readSqlFile("-", { stdin: stdin([]) })).rejects.toMatchObject({
+      code: "QUERY_SQL_FILE_INVALID",
+      exitCode: 2,
+    });
+    await expect(readSqlFile("-", { stdin: stdin(["  \n"]) })).rejects.toMatchObject({
+      code: "QUERY_SQL_FILE_INVALID",
+      exitCode: 2,
+    });
   });
 
   it("rejects invalid UTF-8", async () => {
