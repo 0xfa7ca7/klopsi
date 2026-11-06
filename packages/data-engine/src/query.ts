@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { duckDbMemoryLimitBytes, EXIT_CODES, KlopsiError } from "@klopsi/domain";
 import { stageTabularInput, type TabularStage } from "./tabular-stage.js";
+import { validateQueryParameters, type QueryParameter } from "./query-parameters.js";
 import type { DataInput } from "./types.js";
 import type {
   QueryLimits,
@@ -48,6 +49,8 @@ function boundedLimit(name: keyof typeof MAX_LIMITS, value: number): number {
 export interface QueryExecutionOptions {
   readonly input: DataInput;
   readonly sql: string;
+  /** Named `$name` parameters bound through DuckDB prepared-statement bindings. */
+  readonly parameters?: readonly QueryParameter[];
   readonly rowLimit?: number;
   readonly timeoutMs?: number;
   readonly maxSqlBytes?: number;
@@ -81,7 +84,7 @@ function workerError(error: Extract<QueryWorkerMessage, { type: "error" }>["erro
   return new KlopsiError({
     code: error.code,
     message: error.message,
-    exitCode: EXIT_CODES.QUERY_FAILURE,
+    exitCode: error.exitCode === 2 ? EXIT_CODES.INVALID_INPUT : EXIT_CODES.QUERY_FAILURE,
     ...(error.context === undefined ? {} : { context: error.context }),
   });
 }
@@ -148,6 +151,7 @@ export class DuckDbQueryRunner {
 
   async execute(options: QueryExecutionOptions): Promise<QueryResult> {
     queryLimits(options);
+    validateQueryParameters(options.parameters ?? []);
     let directory: string | undefined;
     let stage: TabularStage | undefined;
     let queryResult: QueryResult | undefined;
@@ -184,6 +188,7 @@ export class DuckDbQueryRunner {
         databasePath,
         invocationDirectory: directory,
         sql: options.sql,
+        ...(options.parameters === undefined ? {} : { parameters: options.parameters }),
         ...(options.rowLimit === undefined ? {} : { rowLimit: options.rowLimit }),
         ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         ...(options.maxSqlBytes === undefined ? {} : { maxSqlBytes: options.maxSqlBytes }),
@@ -229,6 +234,7 @@ export class DuckDbQueryRunner {
 
   async executePrepared(options: PreparedQueryExecutionOptions): Promise<QueryResult> {
     const limits = queryLimits(options);
+    const parameters = validateQueryParameters(options.parameters ?? []);
     let child: ChildProcess | undefined;
     let queryResult: QueryResult | undefined;
     let operationError: unknown;
@@ -238,6 +244,7 @@ export class DuckDbQueryRunner {
         databasePath: options.databasePath,
         invocationDirectory: options.invocationDirectory,
         sql: options.sql,
+        ...(parameters.length === 0 ? {} : { parameters }),
         limits,
       };
       const path =

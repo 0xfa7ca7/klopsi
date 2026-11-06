@@ -27,6 +27,9 @@ Analyze tabular inputs with bounded read-only SQL or convert supported formats. 
 
 - Use one read-only `SELECT`, `WITH ... SELECT`, or `VALUES` statement, with an explicit `--limit` and a suitable timeout.
 - Keep global query row, time, memory, and thread bounds appropriate to the requested result; correct exit 7 rather than retrying the same query.
+- Never splice user-supplied values into SQL text; write `$name` placeholders and pass each value with repeatable `--param name=value`, or `name:int=`, `name:double=`, `name:bool=`, `name:date=` for typed values.
+- Put long or multi-line SQL in a UTF-8 file and pass `--sql-file <path>` (or `--sql-file -` for piped stdin) instead of shell-quoting it with `--sql`; use exactly one of the two.
+- Treat exit 2 `QUERY_PARAM_*` errors as an argument mismatch: supply every placeholder listed in `context.missing`, drop names in `context.unused`, and correct invalid typed values.
 
 ### Export query results
 
@@ -45,7 +48,7 @@ Analyze tabular inputs with bounded read-only SQL or convert supported formats. 
 Run one sandboxed read-only query over tabular data.
 
 ```sh
-klopsi query <input> --sql <query> [options]
+klopsi query <input> [options]
 ```
 
 #### Arguments
@@ -58,7 +61,9 @@ klopsi query <input> --sql <query> [options]
 
 | Option | Required | Values | Conflicts | Description |
 | --- | --- | --- | --- | --- |
-| `--sql <query>` | yes | query | — | one SELECT, WITH ... SELECT, or VALUES statement |
+| `--sql <query>` | no | query | `--sql-file` | one SELECT, WITH ... SELECT, or VALUES statement (or use --sql-file) |
+| `--sql-file <path>` | no | path | `--sql` | read the statement from a UTF-8 file, or stdin with - (or use --sql) |
+| `--param <name=value>` | no | name=value | — | bind a $name placeholder (repeatable; typed name:type=value with int, double, bool, or date) |
 | `--limit <rows>` | no | rows | — | maximum returned rows |
 | `--timeout-ms <milliseconds>` | no | milliseconds | — | hard query deadline |
 | `--sheet <name>` | no | name | — | XLSX sheet name |

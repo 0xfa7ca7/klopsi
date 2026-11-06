@@ -391,3 +391,173 @@ DATA=7;`,
     );
   });
 });
+
+describe("DuckDbQueryRunner named parameters", () => {
+  const worker = new URL("./fixtures/query-worker-source-entry.ts", import.meta.url);
+
+  it.each([
+    "'; DROP TABLE data; --",
+    "a' OR '1'='1",
+    "x'); COPY data TO '/tmp/klopsi-injection.csv'; --",
+    '" OR 1=1 --',
+    "$name",
+  ])("treats a hostile value as data: %s", async (value) => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: "SELECT $needle AS needle, count(*) AS matches FROM data WHERE name = $needle",
+        parameters: [{ name: "needle", type: "varchar", value }],
+      }),
+    ).resolves.toMatchObject({
+      rows: [{ needle: value, matches: "0" }],
+    });
+    await expect(
+      runner.execute({ input, sql: "SELECT count(*)::INTEGER AS total FROM data" }),
+    ).resolves.toMatchObject({ rows: [{ total: 3 }] });
+  });
+
+  it("binds typed values without interpolation", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: `SELECT name FROM data
+          WHERE CAST(value AS BIGINT) >= $min AND $flag AND $ratio < 2 AND $day = DATE '2024-02-29'
+          ORDER BY name`,
+        parameters: [
+          { name: "min", type: "int", value: "2" },
+          { name: "flag", type: "bool", value: "true" },
+          { name: "ratio", type: "double", value: "1.5" },
+          { name: "day", type: "date", value: "2024-02-29" },
+        ],
+      }),
+    ).resolves.toMatchObject({ rows: [{ name: "b" }, { name: "c" }] });
+    await expect(
+      runner.execute({
+        input,
+        sql: "SELECT typeof($n) AS n, typeof($x) AS x, typeof($d) AS d, typeof($b) AS b, typeof($s) AS s",
+        parameters: [
+          { name: "n", type: "int", value: "9223372036854775807" },
+          { name: "x", type: "double", value: "1" },
+          { name: "d", type: "date", value: "2024-01-01" },
+          { name: "b", type: "bool", value: "false" },
+          { name: "s", type: "varchar", value: "5" },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      rows: [{ n: "BIGINT", x: "DOUBLE", d: "DATE", b: "BOOLEAN", s: "VARCHAR" }],
+    });
+  });
+
+  it("matches parameter names case-insensitively like DuckDB", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: "SELECT $City AS city",
+        parameters: [{ name: "city", type: "varchar", value: "Koper" }],
+      }),
+    ).resolves.toMatchObject({ rows: [{ city: "Koper" }] });
+  });
+
+  it("reports missing parameters with exit 2", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: "SELECT * FROM data WHERE name = $name AND value = $value",
+        parameters: [{ name: "name", type: "varchar", value: "a" }],
+      }),
+    ).rejects.toMatchObject({
+      code: "QUERY_PARAM_MISSING",
+      exitCode: 2,
+      context: { missing: ["value"] },
+    });
+    await expect(
+      runner.execute({ input, sql: "SELECT * FROM data WHERE name = $name" }),
+    ).rejects.toMatchObject({ code: "QUERY_PARAM_MISSING", exitCode: 2 });
+  });
+
+  it("rejects positional placeholders that cannot be bound by name", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(runner.execute({ input, sql: "SELECT ? AS x" })).rejects.toMatchObject({
+      code: "QUERY_PARAM_MISSING",
+      exitCode: 2,
+    });
+  });
+
+  it("reports unused parameters with exit 2", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: "SELECT 1 AS x",
+        parameters: [{ name: "extra", type: "varchar", value: "a" }],
+      }),
+    ).rejects.toMatchObject({
+      code: "QUERY_PARAM_UNUSED",
+      exitCode: 2,
+      context: { unused: ["extra"] },
+    });
+  });
+
+  it("validates parameters before starting a worker", async () => {
+    const runner = new DuckDbQueryRunner({
+      workerPath: new URL("./fixtures/hanging-query-worker.mjs", import.meta.url),
+    });
+    await expect(
+      runner.executePrepared({
+        databasePath: join(directory, "missing.duckdb"),
+        invocationDirectory: directory,
+        sql: "SELECT $n",
+        parameters: [{ name: "n", type: "int", value: "1 OR 1=1" }],
+      }),
+    ).rejects.toMatchObject({ code: "QUERY_PARAM_INVALID", exitCode: 2 });
+  });
+
+  it("still enforces the read-only policy with placeholders", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: "COPY (SELECT $x) TO '/tmp/klopsi-param-copy.csv'",
+        parameters: [{ name: "x", type: "varchar", value: "a" }],
+      }),
+    ).rejects.toMatchObject({ code: "QUERY_FORBIDDEN", exitCode: 7 });
+  });
+
+  it("reports mixed named and positional placeholders with exit 2", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    await expect(
+      runner.execute({
+        input,
+        sql: "SELECT $a AS a, ? AS b",
+        parameters: [{ name: "a", type: "varchar", value: "x" }],
+      }),
+    ).rejects.toMatchObject({ code: "QUERY_PARAM_INVALID", exitCode: 2 });
+  });
+
+  it("redacts bound text values from DuckDB error messages", async () => {
+    const runner = new DuckDbQueryRunner({ workerPath: worker });
+    let error: unknown;
+    try {
+      await runner.execute({
+        input,
+        sql: "SELECT CAST($token AS INTEGER) AS v, $short AS s",
+        parameters: [
+          { name: "token", type: "varchar", value: "secretval" },
+          { name: "short", type: "varchar", value: "a" },
+        ],
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ exitCode: 7 });
+    const message = (error as Error).message;
+    expect(message).not.toContain("secretval");
+    expect(message).toContain("'<param:token>'");
+    expect(message).toContain("Could not convert string");
+    expect(JSON.stringify(error)).not.toContain("secretval");
+  });
+});

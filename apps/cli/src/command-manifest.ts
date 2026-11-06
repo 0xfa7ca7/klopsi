@@ -228,9 +228,21 @@ export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
     "Run one sandboxed read-only query over tabular data",
     [argument("<input>", "local path or canonical resource reference")],
     [
-      option("--sql <query>", "one SELECT, WITH ... SELECT, or VALUES statement", {
-        mandatory: true,
-      }),
+      option(
+        "--sql <query>",
+        "one SELECT, WITH ... SELECT, or VALUES statement (or use --sql-file)",
+        { conflicts: ["sqlFile"] },
+      ),
+      option(
+        "--sql-file <path>",
+        "read the statement from a UTF-8 file, or stdin with - (or use --sql)",
+        { conflicts: ["sql"] },
+      ),
+      option(
+        "--param <name=value>",
+        "bind a $name placeholder (repeatable; typed name:type=value with int, double, bool, or date)",
+        { parser: "collect", defaultValue: [] },
+      ),
       option("--limit <rows>", "maximum returned rows", { parser: "positive" }),
       option("--timeout-ms <milliseconds>", "hard query deadline", { parser: "positive" }),
       option("--sheet <name>", "XLSX sheet name"),

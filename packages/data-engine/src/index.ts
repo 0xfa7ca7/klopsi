@@ -23,6 +23,14 @@ export type {
 export { DataEngine, inferredType } from "./inspect.js";
 export { QueryPolicy } from "./query-policy.js";
 export { DuckDbQueryRunner } from "./query.js";
+export {
+  MAX_QUERY_PARAMETERS,
+  MAX_QUERY_PARAMETER_VALUE_BYTES,
+  QUERY_PARAMETER_TYPES,
+  parseQueryParameter,
+  validateQueryParameters,
+} from "./query-parameters.js";
+export type { QueryParameter, QueryParameterType } from "./query-parameters.js";
 export { stageTabularInput, verifyStagedDatabase } from "./tabular-stage.js";
 export type { TabularStage } from "./tabular-stage.js";
 export { executeQueryWorker, startQueryWorker } from "./query-worker.js";

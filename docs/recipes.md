@@ -8,6 +8,25 @@ Inspect and validate: `klopsi resource preview ./downloads/data.csv --limit 10 -
 
 Query and export: `klopsi query ./downloads/data.csv --sql "select * from data limit 10" --output result.json --json`.
 
+## Parameterized SQL files
+
+Keep long SQL in a file and pass user-supplied values as bound parameters instead of editing SQL text:
+
+```sh
+cat > by-region.sql <<'SQL'
+select region, station, CAST(vehicles AS BIGINT) AS vehicles
+from data
+where region = $region and CAST(vehicles AS BIGINT) >= $min
+order by vehicles desc
+SQL
+klopsi query ./downloads/traffic.csv --sql-file by-region.sql \
+  --param region=Gorenjska --param min:int=1000 \
+  --output gorenjska.csv --json
+klopsi provenance show gorenjska.csv --json
+```
+
+`--param` values are bound through DuckDB prepared statements, so a value such as `O'Brien` or `'; drop table data; --` is matched literally. Use `--sql-file -` to read the statement from a pipe, for example `generate-sql | klopsi query data.csv --sql-file - --json`. The export provenance records both the SQL and the parameters.
+
 Convert and verify: `klopsi convert data.csv --to parquet --output data.parquet`; `klopsi provenance show data.parquet`; `klopsi provenance verify data.parquet --json`.
 
 ## Dense PC-Axis

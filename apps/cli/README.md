@@ -78,19 +78,19 @@ Run `klopsi --help` or read the [complete command reference](https://github.com/
 
 ## Command overview
 
-| Goal                          | Command                                                         |
-| ----------------------------- | --------------------------------------------------------------- |
-| Search the catalogue          | `klopsi search [text]`                                          |
-| Inspect a dataset             | `klopsi dataset show <id>`                                      |
-| List dataset resources        | `klopsi dataset resources <id>`                                 |
-| Inspect or preview a resource | `klopsi resource show <id>` / `klopsi resource preview <input>` |
-| Download data                 | `klopsi download <ids...>`                                      |
-| Validate data or metadata     | `klopsi validate <input>`                                       |
-| Query tabular data            | `klopsi query <input> --sql <statement>`                        |
-| Explore data in DuckDB UI     | `klopsi duckdb open <input>`                                    |
-| Convert formats               | `klopsi convert <input> --to <format> --output <path>`          |
-| Verify provenance             | `klopsi provenance verify <path>`                               |
-| Diagnose the installation     | `klopsi doctor`                                                 |
+| Goal                          | Command                                                          |
+| ----------------------------- | ---------------------------------------------------------------- |
+| Search the catalogue          | `klopsi search [text]`                                           |
+| Inspect a dataset             | `klopsi dataset show <id>`                                       |
+| List dataset resources        | `klopsi dataset resources <id>`                                  |
+| Inspect or preview a resource | `klopsi resource show <id>` / `klopsi resource preview <input>`  |
+| Download data                 | `klopsi download <ids...>`                                       |
+| Validate data or metadata     | `klopsi validate <input>`                                        |
+| Query tabular data            | `klopsi query <input> --sql <statement> \| --sql-file <path\|->` |
+| Explore data in DuckDB UI     | `klopsi duckdb open <input>`                                     |
+| Convert formats               | `klopsi convert <input> --to <format> --output <path>`           |
+| Verify provenance             | `klopsi provenance verify <path>`                                |
+| Diagnose the installation     | `klopsi doctor`                                                  |
 
 ## Using klopsi with agents
 
