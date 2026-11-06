@@ -1,9 +1,12 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DataEngine } from "../src/index.js";
-import { openXlsxWorkbook, type XlsxRow } from "../src/xlsx-reader.js";
+import { createRequire } from "node:module";
+import { unzipRaw } from "unzipit";
+import { classifyNumberFormat, openXlsxWorkbook, type XlsxRow } from "../src/xlsx-reader.js";
 import { row, rows, writeFixtureXlsx, xlsxEntries, zipEntries } from "./xlsx-fixture.js";
 
 let root: string;
@@ -43,7 +46,18 @@ function centralEntry(zip: Buffer, name: Buffer): number {
   throw new Error(`missing central entry ${name.toString()}`);
 }
 
-const DATE_STYLES = `<numFmts count="3"><numFmt numFmtId="164" formatCode="yyyy\\-mm\\-dd"/><numFmt numFmtId="165" formatCode="&quot;day &quot;0.00"/><numFmt numFmtId="166" formatCode="[Red][&lt;0]0.0;[h]:mm"/></numFmts><cellXfs count="6"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="165"/><xf numFmtId="10"/><xf numFmtId="22"/></cellXfs>`;
+const DATE_STYLES =
+  `<numFmts count="9"><numFmt numFmtId="164" formatCode="yyyy\\-mm\\-dd"/>` +
+  `<numFmt numFmtId="165" formatCode="&quot;day &quot;0.00"/>` +
+  `<numFmt numFmtId="166" formatCode="[Red][&lt;0]0.0;[h]:mm"/>` +
+  `<numFmt numFmtId="167" formatCode="h:mm"/><numFmt numFmtId="168" formatCode="[h]:mm:ss"/>` +
+  `<numFmt numFmtId="169" formatCode="yyyy-mm-dd hh:mm:ss.000"/><numFmt numFmtId="170" formatCode="mm:ss"/>` +
+  `<numFmt numFmtId="171" formatCode="d/m/yyyy h:mm AM/PM"/></numFmts>` +
+  `<cellXfs count="12"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="165"/>` +
+  `<xf numFmtId="10"/><xf numFmtId="22"/><xf numFmtId="167"/><xf numFmtId="168"/><xf numFmtId="169"/>` +
+  `<xf numFmtId="170"/><xf numFmtId="171"/><xf numFmtId="166"/></cellXfs>` +
+  // Differential formats may reuse ids; they must not replace the cell formats.
+  `<dxfs count="1"><dxf><numFmt numFmtId="164" formatCode="0.00"/></dxf></dxfs>`;
 
 describe("bounded XLSX reader", () => {
   it("lists worksheets in workbook order and skips chartsheets", async () => {
@@ -69,7 +83,7 @@ describe("bounded XLSX reader", () => {
       sheets: [
         {
           name: "S",
-          rows: `<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c><c r="E1" t="s"><v>99</v></c></row>`,
+          rows: `<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c></row>`,
         },
       ],
       sharedStrings: [
@@ -80,7 +94,7 @@ describe("bounded XLSX reader", () => {
       ],
     });
     expect(values(await readAll(path, "S"))).toEqual([
-      ["  padded  ", "Bold and plain", "line\rbreak & <tag> _x0041_", "cdata <raw>", null],
+      ["  padded  ", "Bold and plain", "line\rbreak & <tag> _x0041_", "cdata <raw>"],
     ]);
   });
 
@@ -110,45 +124,145 @@ describe("bounded XLSX reader", () => {
     expect(read[3]?.cells[1]?.value).toBe(4);
   });
 
-  it("converts built-in and custom date formats in the 1900 and 1904 systems", async () => {
-    const dateRow = `<row r="1"><c r="A1" s="1"><v>45293</v></c><c r="B1" s="2"><v>45293.5</v></c><c r="C1" s="3"><v>45293</v></c><c r="D1" s="4"><v>0.25</v></c><c r="E1" s="5"><v>1</v></c><c r="F1" s="1"><v>59</v></c><c r="G1" t="d"><v>2024-01-02T03:04:05Z</v></c><c r="H1" s="99"><v>3</v></c></row>`;
+  it("classifies number formats as date, date-time, time, elapsed, or numeric", () => {
+    expect(
+      Object.fromEntries(
+        [
+          "yyyy-mm-dd",
+          "d-mmm-yy",
+          "mmm yyyy",
+          "dd/mm/yyyy hh:mm",
+          "m/d/yy h:mm AM/PM",
+          "h:mm",
+          "mm:ss",
+          "h:mm:ss.0",
+          "[h]:mm:ss",
+          "[mm]:ss",
+          '"day "0.00',
+          "0.00E+00",
+          "#,##0.00\\ [$EUR]",
+          "General",
+          "[Red][<0]0.0;[h]:mm",
+        ].map((code) => [code, classifyNumberFormat(code) ?? "number"]),
+      ),
+    ).toEqual({
+      "yyyy-mm-dd": "date",
+      "d-mmm-yy": "date",
+      "mmm yyyy": "date",
+      "dd/mm/yyyy hh:mm": "datetime",
+      "m/d/yy h:mm AM/PM": "datetime",
+      "h:mm": "time",
+      "mm:ss": "time",
+      "h:mm:ss.0": "time",
+      "[h]:mm:ss": "elapsed",
+      "[mm]:ss": "elapsed",
+      '"day "0.00': "number",
+      "0.00E+00": "number",
+      "#,##0.00\\ [$EUR]": "number",
+      General: "number",
+      "[Red][<0]0.0;[h]:mm": "number",
+    });
+  });
+
+  it("reads dates as wall-clock text and keeps times, elapsed values, and out-of-range serials numeric", async () => {
+    const cells: readonly [string, string][] = [
+      ["1", "45293"],
+      ["2", "45293.5"],
+      ["3", "45293"],
+      ["4", "0.25"],
+      ["5", "45293.5"],
+      ["1", "1"],
+      ["1", "59"],
+      ["99", "3"],
+      ["6", "0.5"],
+      ["7", "1.5"],
+      ["8", "45293.000005787037"],
+      ["9", "0.25"],
+      ["10", "45293.75"],
+      ["1", "-1"],
+      ["1", "2958466"],
+      ["11", "5"],
+    ];
+    const dateRow = `<row r="1">${cells.map(([style, value]) => `<c s="${style}"><v>${value}</v></c>`).join("")}<c t="d"><v>2024-01-02T03:04:05</v></c></row>`;
     const path1900 = await writeFixtureXlsx(join(root, "dates-1900.xlsx"), {
       sheets: [{ name: "D", rows: dateRow }],
       styles: DATE_STYLES,
     });
     expect(values(await readAll(path1900, "D"))).toEqual([
       [
-        "2024-01-02T00:00:00.000Z",
-        "2024-01-02T12:00:00.000Z",
+        "2024-01-02",
+        "2024-01-02",
         45293,
         0.25,
-        "1900-01-01T00:00:00.000Z",
-        "1900-02-28T00:00:00.000Z",
-        "2024-01-02T03:04:05.000Z",
+        "2024-01-02T12:00:00",
+        "1900-01-01",
+        "1900-02-28",
         3,
+        0.5,
+        1.5,
+        "2024-01-02T00:00:00.500",
+        0.25,
+        "2024-01-02T18:00:00",
+        -1,
+        2958466,
+        5,
+        "2024-01-02T03:04:05",
       ],
     ]);
     const path1904 = await writeFixtureXlsx(join(root, "dates-1904.xlsx"), {
       sheets: [
         {
           name: "D",
-          rows: `<row r="1"><c r="A1" s="1"><v>0</v></c><c r="B1" s="2"><v>43831</v></c></row>`,
+          rows: `<row r="1"><c s="1"><v>0</v></c><c s="2"><v>43831</v></c><c s="5"><v>0.5</v></c></row>`,
         },
       ],
       styles: DATE_STYLES,
       date1904: true,
     });
     expect(values(await readAll(path1904, "D"))).toEqual([
-      ["1904-01-01T00:00:00.000Z", "2024-01-02T00:00:00.000Z"],
+      ["1904-01-01", "2024-01-02", "1904-01-01T12:00:00"],
     ]);
   });
 
-  it("treats elapsed-time custom formats as dates", async () => {
-    const path = await writeFixtureXlsx(join(root, "elapsed.xlsx"), {
-      sheets: [{ name: "E", rows: `<row r="1"><c r="A1" s="1"><v>1.5</v></c></row>` }],
-      styles: `<numFmts count="1"><numFmt numFmtId="170" formatCode="[h]:mm:ss"/></numFmts><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="170"/></cellXfs>`,
+  it("rejects shared-string indexes outside the table", async () => {
+    const path = await writeFixtureXlsx(join(root, "shared-index.xlsx"), {
+      sheets: [{ name: "S", rows: `<row r="1"><c r="A1" t="s"><v>99</v></c></row>` }],
+      sharedStrings: [`<si><t>only</t></si>`],
     });
-    expect(values(await readAll(path, "E"))).toEqual([["1900-01-01T12:00:00.000Z"]]);
+    await expect(readAll(path, "S")).rejects.toMatchObject({ code: "INVALID_XLSX_DATA" });
+  });
+
+  it.each([
+    [
+      "text inside an ignored element",
+      `<extLst><ext uri="x">${"x>".repeat(100_000)}</ext></extLst>`,
+    ],
+    ["attribute", `<extLst foo="${"a".repeat(200_000)}"/>`],
+    ["comment", `<!--${"a<".repeat(100_000)}-->`],
+    ["CDATA section", `<extLst><![CDATA[${"<a>".repeat(70_000)}]]></extLst>`],
+  ])("bounds a huge %s before saxes buffers it", async (_kind, hostile) => {
+    const path = join(root, "huge-node.xlsx");
+    const entries = xlsxEntries({ sheets: [{ name: "H", rows: "" }] });
+    entries["xl/worksheets/sheet1.xml"] =
+      `<?xml version="1.0"?><worksheet><sheetData><row r="1"><c><v>1</v></c></row></sheetData>${hostile}</worksheet>`;
+    await writeFile(path, zipEntries(entries));
+    const workbook = await openXlsxWorkbook(path, { maxCellChars: 1_024 });
+    await expect(
+      (async () => {
+        for await (const value of workbook.rows("H")) void value;
+      })(),
+    ).rejects.toMatchObject({ code: "XLSX_LIMIT_EXCEEDED" });
+  });
+
+  it("keeps legitimate long cells within the run-length bound", async () => {
+    const text = "&".repeat(1_024);
+    const path = await writeFixtureXlsx(join(root, "long-cell.xlsx"), {
+      sheets: [{ name: "L", rows: rows([[text], ["after"]]) }],
+    });
+    const workbook = await openXlsxWorkbook(path, { maxCellChars: 1_024 });
+    const read: XlsxRow[] = [];
+    for await (const value of workbook.rows("L")) read.push(value);
+    expect(values(read)).toEqual([[text], ["after"]]);
   });
 
   it("stops streaming when the consumer stops early", async () => {
@@ -303,5 +417,106 @@ describe("bounded XLSX reader", () => {
     await expect(new DataEngine().preview(path, { sheet: "Nope" })).rejects.toMatchObject({
       code: "SHEET_NOT_FOUND",
     });
+  });
+
+  it("rejects local ZIP headers that disagree with the central directory", async () => {
+    const entries = xlsxEntries({ sheets: [{ name: "X", rows: rows([[1]]) }] });
+    const name = Buffer.from("xl/worksheets/sheet1.xml");
+
+    const renamed = Buffer.from(zipEntries(entries));
+    const local = renamed.indexOf(name);
+    expect(renamed.readUInt32LE(local - 30)).toBe(0x04034b50);
+    renamed[local + name.length - 5] = "2".charCodeAt(0);
+    const renamedPath = join(root, "local-name.xlsx");
+    await writeFile(renamedPath, renamed);
+    await expect(readAll(renamedPath, "X")).rejects.toMatchObject({ code: "INVALID_XLSX_DATA" });
+
+    const restored = Buffer.from(zipEntries(entries));
+    const header = restored.indexOf(name) - 30;
+    restored.writeUInt16LE(0, header + 8);
+    const methodPath = join(root, "local-method.xlsx");
+    await writeFile(methodPath, restored);
+    await expect(readAll(methodPath, "X")).rejects.toMatchObject({ code: "INVALID_XLSX_DATA" });
+  });
+
+  it("depends on unzipit 1.4.3 internals (_rawEntry); revisit xlsx-zip.ts before bumping", async () => {
+    const version = (
+      createRequire(import.meta.url)("unzipit/package.json") as { readonly version: string }
+    ).version;
+    expect(
+      version,
+      "xlsx-zip.ts reads unzipit's private ZipEntry._rawEntry; re-verify its shape before changing the pin",
+    ).toBe("1.4.3");
+    const zip = zipEntries(xlsxEntries({ sheets: [{ name: "X", rows: rows([[1]]) }] }));
+    const { entries } = await unzipRaw(zip);
+    const raw = (entries[0] as unknown as { readonly _rawEntry: Record<string, unknown> })
+      ._rawEntry;
+    expect(raw).toMatchObject({
+      relativeOffsetOfLocalHeader: expect.any(Number),
+      compressionMethod: expect.any(Number),
+      generalPurposeBitFlag: expect.any(Number),
+      crc32: expect.any(Number),
+    });
+  });
+
+  it.each([
+    ["openpyxl", null],
+    ["xlsxwriter", 3],
+  ] as const)(
+    "reads a workbook written by %s (generate-real-world-xlsx.py)",
+    async (writer, cachedDouble) => {
+      const path = resolve(`packages/testing/fixtures/data/${writer}.xlsx`);
+      const workbook = await openXlsxWorkbook(path);
+      expect(workbook.sheetNames).toEqual(["Data", "Hidden"]);
+      expect(values(await readAll(path, "Data"))).toEqual([
+        ["label", "amount", "day", "moment", "clock", "doubled"],
+        ["Ljubljana", 1.5, "2024-01-02", "2024-01-02T03:04:05", 0.5208333333333334, { f: "B2*2" }],
+        ["Ljubljana", 2, "1999-12-31", "2000-02-29T23:59:59", 0.25, { f: "B3*2" }],
+      ]);
+      const cached = await readAll(path, "Data");
+      expect(cached[1]?.cells[5]?.value).toBe(cachedDouble);
+      expect(values(await readAll(path, "Hidden"))).toEqual([["secret"], [42]]);
+
+      const preview = await new DataEngine().preview(path, { sheet: "Data" });
+      expect(preview.rows[0]).toMatchObject({ day: "2024-01-02", doubled: "=B2*2" });
+      expect(preview.warnings).toContainEqual(expect.objectContaining({ code: "FORMULA_CELL" }));
+    },
+  );
+
+  it("stages wall-clock dates so DuckDB infers DATE and TIMESTAMP columns", async () => {
+    const input = resolve("packages/testing/fixtures/data/xlsxwriter.xlsx");
+    const output = join(root, "real-world.parquet");
+    const engine = new DataEngine();
+    await engine.convert({ input, output, targetFormat: "parquet", sheet: "Data", force: false });
+    const instance = await DuckDBInstance.create(":memory:");
+    const connection = await instance.connect();
+    try {
+      const literal = `'${output.replaceAll("'", "''")}'`;
+      const described = await connection.runAndReadAll(
+        `DESCRIBE SELECT * FROM read_parquet(${literal})`,
+      );
+      expect(
+        Object.fromEntries(
+          described.getRowObjectsJS().map((row) => [row.column_name, row.column_type]),
+        ),
+      ).toMatchObject({ day: "DATE", moment: "TIMESTAMP", clock: "DOUBLE", amount: "DOUBLE" });
+      const moments = await connection.runAndReadAll(
+        `SELECT strftime(moment, '%Y-%m-%d %H:%M:%S') AS moment FROM read_parquet(${literal}) ORDER BY moment`,
+      );
+      expect(moments.getRowObjectsJS()).toEqual([
+        { moment: "2000-02-29 23:59:59" },
+        { moment: "2024-01-02 03:04:05" },
+      ]);
+    } finally {
+      connection.closeSync();
+      instance.closeSync();
+    }
+    const schema = await engine.inferSchema(input, { sheet: "Data" });
+    expect(schema.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "day", type: "date" }),
+        expect.objectContaining({ name: "moment", type: "timestamp" }),
+      ]),
+    );
   });
 });

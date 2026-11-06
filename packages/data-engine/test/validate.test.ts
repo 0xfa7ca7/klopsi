@@ -472,7 +472,12 @@ DATA=1 ".";`,
     temporary.push(directory);
     const path = join(directory, "header-budget.xlsx");
     await writeFixtureXlsx(path, {
-      sheets: [{ name: "Rows", rows: fixtureRows([[{ formula: '"danger"' }, "x".repeat(200)]]) }],
+      sheets: [
+        {
+          name: "Rows",
+          rows: fixtureRows([[{ formula: '"danger"', result: "danger" }, "x".repeat(200)]]),
+        },
+      ],
     });
     await expect(
       new DataEngine({ validationMaxRecordBytes: 40 }).validate(path, { sheet: "Rows" }),

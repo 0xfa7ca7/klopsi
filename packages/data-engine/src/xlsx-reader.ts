@@ -67,11 +67,25 @@ const REL_SUFFIX = {
   styles: "/styles",
 } as const;
 
+/** How a number format presents a serial value. */
+export type TemporalKind = "date" | "datetime" | "time" | "elapsed";
+
 // Built-in number formats that render dates or times (ECMA-376 18.8.30 plus
-// the locale-specific East Asian date formats Excel maps to the same ids).
-const BUILT_IN_DATE_FORMATS = new Set([
-  14, 15, 16, 17, 18, 19, 20, 21, 22, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 45, 46, 47, 50, 51,
-  52, 53, 54, 55, 56, 57, 58, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+// the locale-specific East Asian and Thai ids Excel maps implicitly).
+const BUILT_IN_TEMPORAL_FORMATS: ReadonlyMap<number, TemporalKind> = new Map<number, TemporalKind>([
+  ...[14, 15, 16, 17].map((id) => [id, "date"] as const),
+  ...[18, 19, 20, 21, 45, 47].map((id) => [id, "time"] as const),
+  [22, "datetime"],
+  [46, "elapsed"],
+  ...[27, 28, 29, 30, 31, 34, 35, 36, 50, 51, 52, 53, 54, 55, 56, 57, 58].map(
+    (id) => [id, "date"] as const,
+  ),
+  [32, "time"],
+  [33, "time"],
+  ...[71, 72, 73, 74, 81].map((id) => [id, "date"] as const),
+  ...[75, 76, 78, 80].map((id) => [id, "time"] as const),
+  [77, "datetime"],
+  [79, "elapsed"],
 ]);
 
 interface Handlers {
@@ -92,30 +106,72 @@ function wrapError(error: unknown): KlopsiError {
 }
 
 /** Streams a part through saxes, yielding whatever the handlers emit. */
+/** Characters fed to saxes per write, so the run-length check stays fine-grained. */
+const WRITE_SLICE_CHARS = 4_096;
+
+/**
+ * Streams a part through saxes, yielding whatever the handlers emit.
+ *
+ * saxes buffers a whole text node, attribute, comment, CDATA section, or
+ * processing instruction before reporting it, so handler-level checks cannot
+ * bound memory. Instead, every parser event resets a run counter and input is
+ * fed in small slices; a run of input with no event longer than a small
+ * multiple of maxCellChars fails before saxes can buffer it all.
+ */
 async function* parsePart<T>(
   chunks: AsyncIterable<Buffer>,
-  maxDepth: number,
+  limits: Pick<XlsxReadLimits, "maxDepth" | "maxCellChars">,
   build: (emit: (value: T) => void) => Handlers,
 ): AsyncGenerator<T> {
+  const { maxDepth } = limits;
+  const maxRun = limits.maxCellChars * 8;
   const pending: T[] = [];
   const handlers = build((value) => pending.push(value));
   const parser = new SaxesParser({ xmlns: false });
   let depth = 0;
+  let sawEvent = false;
+  let run = 0;
+  const feed = (text: string): void => {
+    for (let offset = 0; offset < text.length; offset += WRITE_SLICE_CHARS) {
+      const slice = text.slice(offset, offset + WRITE_SLICE_CHARS);
+      sawEvent = false;
+      parser.write(slice);
+      run = sawEvent ? 0 : run + slice.length;
+      if (run > maxRun)
+        throw xlsxLimit("An XLSX text node, attribute, or comment exceeds the bounded length.", {
+          limit: maxRun,
+        });
+    }
+  };
+  // saxes keeps one handler per event, so each handler records the event itself.
+  const seen = (): void => {
+    sawEvent = true;
+  };
+  parser.on("comment", seen);
+  parser.on("processinginstruction", seen);
   parser.on("doctype", () => {
     throw invalidXlsx("DTD and entity declarations are not supported in XLSX parts.");
   });
   parser.on("opentag", (tag) => {
+    seen();
     depth += 1;
     if (depth > maxDepth)
       throw xlsxLimit("The XLSX part nests XML elements too deeply.", { limit: maxDepth });
     handlers.open(localName(tag.name), tag.attributes as Readonly<Record<string, string>>);
   });
   parser.on("closetag", (tag) => {
+    seen();
     depth -= 1;
     handlers.close(localName(tag.name));
   });
-  parser.on("text", (text) => handlers.text(text));
-  parser.on("cdata", (text) => handlers.text(text));
+  parser.on("text", (text) => {
+    seen();
+    handlers.text(text);
+  });
+  parser.on("cdata", (text) => {
+    seen();
+    handlers.text(text);
+  });
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let first = true;
   try {
@@ -125,10 +181,10 @@ async function* parsePart<T>(
         if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
         first = false;
       }
-      parser.write(text);
+      feed(text);
       while (pending.length > 0) yield pending.shift() as T;
     }
-    parser.write(decoder.decode());
+    feed(decoder.decode());
     parser.close();
   } catch (error) {
     throw wrapError(error);
@@ -183,33 +239,83 @@ interface Relationship {
   readonly target: string;
 }
 
-function isDateFormat(code: string): boolean {
+/**
+ * Classifies a custom number format. Only the first (positive) section is
+ * considered. `m`/`mm` means minutes directly after an hour token or before a
+ * seconds token, and months otherwise.
+ */
+export function classifyNumberFormat(code: string): TemporalKind | undefined {
   const section = code
     .replace(/"[^"]*"/gu, "")
     .replace(/\\./gu, "")
     .replace(/[_*]./gu, "")
     .split(";")[0] as string;
   let elapsed = false;
-  const stripped = section.replace(/\[([^\]]*)\]/gu, (_match, inner: string) => {
+  let stripped = section.replace(/\[([^\]]*)\]/gu, (_match, inner: string) => {
     if (/^(?:h+|m+|s+)$/iu.test(inner)) elapsed = true;
     return "";
   });
-  if (elapsed) return true;
-  return /[dmyhs]/iu.test(stripped.replace(/general/giu, ""));
+  if (elapsed) return "elapsed";
+  let time = false;
+  stripped = stripped
+    .replace(/am\/pm|a\/p/giu, () => {
+      time = true;
+      return "";
+    })
+    .replace(/general/giu, "")
+    .replace(/e[+-]/giu, "");
+  const tokens = (stripped.match(/[a-z]+/giu) ?? []).map((token) => token.toLowerCase());
+  let date = false;
+  tokens.forEach((token, index) => {
+    const letter = token[0];
+    if (letter === "y" || letter === "d" || letter === "b" || letter === "g") date = true;
+    else if (letter === "h" || letter === "s") time = true;
+    else if (letter === "m") {
+      const previous = tokens[index - 1]?.[0];
+      const next = tokens[index + 1]?.[0];
+      if (previous === "h" || next === "s") time = true;
+      else date = true;
+    }
+  });
+  if (date && time) return "datetime";
+  if (date) return "date";
+  if (time) return "time";
+  return undefined;
 }
 
 const DAY_MS = 86_400_000;
 const UNIX_EPOCH_SERIAL = 25_569;
 const DATE1904_OFFSET = 1_462;
+// 10000-01-01 is the first date Excel cannot represent.
+const MAX_DATE_SERIAL = 2_958_466;
 
-function excelDate(serial: number, date1904: boolean): string | number {
-  if (!Number.isFinite(serial)) return serial;
+function pad(value: number, width = 2): string {
+  return String(value).padStart(width, "0");
+}
+
+/**
+ * Converts a serial in a date-like format to wall-clock text. Excel stores no
+ * time zone, so date-times carry no offset. Time-only and elapsed formats, and
+ * serials outside the representable range, keep the raw number.
+ */
+export function temporalValue(
+  serial: number,
+  kind: TemporalKind | undefined,
+  date1904: boolean,
+): string | number {
+  if (kind === undefined || kind === "time" || kind === "elapsed") return serial;
+  if (!Number.isFinite(serial) || serial < 0 || serial >= MAX_DATE_SERIAL) return serial;
   // Excel's 1900 system counts the nonexistent 1900-02-29, so serials before
   // it are one day behind the Unix-based arithmetic below.
-  const adjusted = !date1904 && serial >= 1 && serial < 60 ? serial + 1 : serial;
+  const adjusted = !date1904 && serial < 60 ? serial + 1 : serial;
   const days = adjusted - UNIX_EPOCH_SERIAL + (date1904 ? DATE1904_OFFSET : 0);
   const date = new Date(Math.round(days * DAY_MS));
-  return Number.isNaN(date.getTime()) ? serial : date.toISOString();
+  if (Number.isNaN(date.getTime())) return serial;
+  const day = `${pad(date.getUTCFullYear(), 4)}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+  if (kind === "date") return day;
+  const milliseconds = date.getUTCMilliseconds();
+  const clock = `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+  return `${day}T${clock}${milliseconds === 0 ? "" : `.${pad(milliseconds, 3)}`}`;
 }
 
 class WorkbookReader implements XlsxWorkbook {
@@ -257,7 +363,7 @@ class WorkbookReader implements XlsxWorkbook {
       await drain(
         parsePart<never>(
           this.chunks(entry, limit, () => sharedStringsTooLarge(entry.size, limit)),
-          this.limits.maxDepth,
+          this.limits,
           () => {
             let inItem = false;
             let inText = false;
@@ -292,17 +398,19 @@ class WorkbookReader implements XlsxWorkbook {
     return this.sharedStrings;
   }
 
-  private async loadDateStyles(): Promise<readonly boolean[]> {
+  private async loadDateStyles(): Promise<readonly (TemporalKind | undefined)[]> {
     const entry = this.stylesEntry;
     if (entry === undefined) return [];
     const custom = new Map<number, string>();
     const formats: number[] = [];
     await drain(
-      parsePart<never>(this.chunks(entry, this.limits.maxPartBytes), this.limits.maxDepth, () => {
+      parsePart<never>(this.chunks(entry, this.limits.maxPartBytes), this.limits, () => {
         let inCellXfs = false;
+        let inNumFmts = false;
         return {
           open(name, attributes) {
-            if (name === "numFmt") {
+            if (name === "numFmts") inNumFmts = true;
+            else if (name === "numFmt" && inNumFmts) {
               const id = Number(attributes.numFmtId);
               if (Number.isInteger(id)) custom.set(id, attributes.formatCode ?? "");
             } else if (name === "cellXfs") inCellXfs = true;
@@ -310,6 +418,7 @@ class WorkbookReader implements XlsxWorkbook {
           },
           close(name) {
             if (name === "cellXfs") inCellXfs = false;
+            else if (name === "numFmts") inNumFmts = false;
           },
           text() {},
         };
@@ -317,7 +426,7 @@ class WorkbookReader implements XlsxWorkbook {
     );
     return formats.map((id) => {
       const code = custom.get(id);
-      return code === undefined ? BUILT_IN_DATE_FORMATS.has(id) : isDateFormat(code);
+      return code === undefined ? BUILT_IN_TEMPORAL_FORMATS.get(id) : classifyNumberFormat(code);
     });
   }
 
@@ -341,7 +450,7 @@ class WorkbookReader implements XlsxWorkbook {
     const maxChars = this.limits.maxCellChars;
     yield* parsePart<XlsxRow>(
       this.chunks(entry, this.limits.maxWorksheetBytes),
-      this.limits.maxDepth,
+      this.limits,
       (emit) => {
         let inSheetData = false;
         let row: { number: number; cells: (XlsxCell | undefined)[] } | undefined;
@@ -367,8 +476,11 @@ class WorkbookReader implements XlsxWorkbook {
           switch (current.type) {
             case "s": {
               if (raw === undefined) return null;
-              const index = Number(raw);
-              return Number.isInteger(index) ? (sharedStrings[index] ?? null) : null;
+              const index = Number(raw.trim());
+              const text = Number.isInteger(index) ? sharedStrings[index] : undefined;
+              if (text === undefined)
+                throw invalidXlsx("An XLSX cell references a missing shared string.");
+              return text;
             }
             case "inlineStr":
               return current.inline === undefined
@@ -387,14 +499,14 @@ class WorkbookReader implements XlsxWorkbook {
             }
             case "d": {
               if (raw === undefined || raw.trim() === "") return null;
-              const date = new Date(raw.trim());
-              return Number.isNaN(date.getTime()) ? raw : date.toISOString();
+              // ISO 8601 text as stored: Excel date-times are wall-clock values.
+              return raw.trim();
             }
             default: {
               if (raw === undefined || raw.trim() === "") return null;
               const number = Number(raw);
               if (Number.isNaN(number)) return raw;
-              return dateStyles[current.style] === true ? excelDate(number, date1904) : number;
+              return temporalValue(number, dateStyles[current.style], date1904);
             }
           }
         };
@@ -519,7 +631,7 @@ async function readRelationships(
           limit: limits.maxPartBytes,
         }),
       ),
-      limits.maxDepth,
+      limits,
       () => ({
         open(name, attributes) {
           if (name !== "Relationship") return;
@@ -567,7 +679,7 @@ export async function openXlsxWorkbook(
           limit: limits.maxPartBytes,
         }),
       ),
-      limits.maxDepth,
+      limits,
       () => ({
         open(name, attributes) {
           if (name === "workbookPr") {

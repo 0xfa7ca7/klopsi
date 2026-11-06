@@ -57,12 +57,12 @@ describe("streaming XLSX writer", () => {
     expect(values.slice(1, hostile.length + 1).map((row) => row[1])).toEqual(
       hostile.map((_text, index) => index + 0.5),
     );
-    expect(values[hostile.length + 1]).toEqual([null, -1e21, false, "2024-01-02T03:04:05.006Z"]);
+    expect(values[hostile.length + 1]).toEqual([null, -1e21, false, "2024-01-02T03:04:05.006"]);
     expect(values[hostile.length + 2]).toEqual([
       null,
       Number.MAX_SAFE_INTEGER,
       null,
-      "1900-01-01T00:00:00.000Z",
+      "1900-01-01T00:00:00",
     ]);
   });
 
@@ -157,7 +157,7 @@ describe("streaming XLSX writer", () => {
     const preview = await engine.preview(safe, { sheet: "Data" });
     expect(preview.columns).toEqual(["label", "amount", "at"]);
     expect(preview.rows).toEqual([
-      { label: "'=2+2", amount: 1, at: "2024-01-02T03:04:05.000Z" },
+      { label: "'=2+2", amount: 1, at: "2024-01-02T03:04:05" },
       { label: "'@cmd <x>&", amount: 2.5, at: null },
     ]);
   });

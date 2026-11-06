@@ -23,6 +23,12 @@ export interface FixtureWorkbook {
   readonly extra?: Readonly<Record<string, string | Uint8Array>>;
 }
 
+/** A formula cell, optionally with the cached result a spreadsheet application stores. */
+export interface FixtureFormula {
+  readonly formula: string;
+  readonly result?: string | number;
+}
+
 export function sheetXml(rows: string): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="${MAIN}" xmlns:r="${REL}"><sheetData>${rows}</sheetData></worksheet>`;
 }
@@ -74,21 +80,27 @@ export async function writeFixtureXlsx(path: string, workbook: FixtureWorkbook):
 /** Shorthand for a row of literal cells: numbers, booleans, null, inline strings, or formulas. */
 export function row(
   number: number,
-  values: readonly (string | number | boolean | null | { readonly formula: string })[],
+  values: readonly (string | number | boolean | null | FixtureFormula)[],
 ): string {
   const cells = values.map((value, index) => {
     const ref = `${columnName(index + 1)}${number}`;
     if (value === null) return "";
     if (typeof value === "number") return `<c r="${ref}"><v>${value}</v></c>`;
     if (typeof value === "boolean") return `<c r="${ref}" t="b"><v>${value ? 1 : 0}</v></c>`;
-    if (typeof value === "object") return `<c r="${ref}"><f>${escape(value.formula)}</f></c>`;
+    if (typeof value === "object") {
+      const formula = `<f>${escape(value.formula)}</f>`;
+      if (value.result === undefined) return `<c r="${ref}">${formula}</c>`;
+      return typeof value.result === "number"
+        ? `<c r="${ref}">${formula}<v>${value.result}</v></c>`
+        : `<c r="${ref}" t="str">${formula}<v>${escape(value.result)}</v></c>`;
+    }
     return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${escape(value)}</t></is></c>`;
   });
   return `<row r="${number}">${cells.join("")}</row>`;
 }
 
 export function rows(
-  values: readonly (readonly (string | number | boolean | null | { readonly formula: string })[])[],
+  values: readonly (readonly (string | number | boolean | null | FixtureFormula)[])[],
 ): string {
   return values.map((value, index) => row(index + 1, value)).join("");
 }

@@ -76,6 +76,7 @@ interface RawEntry {
 
 export interface PackageEntry {
   readonly name: string;
+  readonly nameBytes: Uint8Array;
   readonly size: number;
   readonly compressedSize: number;
   readonly method: number;
@@ -89,6 +90,12 @@ export interface ZipPackage {
   entry(name: string): PackageEntry | undefined;
 }
 
+/**
+ * unzipit's public API inflates whole entries into memory, so streaming needs
+ * the local-header offset, method, and CRC from its private `_rawEntry`. That
+ * shape is verified against the exact pin (unzipit 1.4.3) in
+ * test/xlsx-reader.test.ts; re-check it before bumping the dependency.
+ */
 function packageEntry(entry: ZipEntry): PackageEntry {
   const raw = (entry as unknown as { readonly _rawEntry?: Partial<RawEntry> })._rawEntry;
   if (
@@ -98,9 +105,16 @@ function packageEntry(entry: ZipEntry): PackageEntry {
     typeof raw.generalPurposeBitFlag !== "number" ||
     typeof raw.crc32 !== "number"
   )
-    throw invalidXlsx("The XLSX ZIP directory could not be interpreted.");
+    throw new KlopsiError({
+      code: "XLSX_ZIP_BACKEND_INCOMPATIBLE",
+      message:
+        "The installed unzipit no longer exposes ZipEntry._rawEntry as in unzipit 1.4.3; the XLSX reader cannot stream entries.",
+      exitCode: EXIT_CODES.INTERNAL,
+      suggestion: "Reinstall klopsi with its pinned dependencies (unzipit 1.4.3).",
+    });
   return {
     name: entry.name,
+    nameBytes: entry.nameBytes,
     size: entry.size,
     compressedSize: entry.compressedSize,
     method: raw.compressionMethod,
@@ -157,7 +171,18 @@ async function dataStart(pkg: ZipPackage, entry: PackageEntry): Promise<number> 
     const { bytesRead } = await handle.read(header, 0, 30, entry.localHeaderOffset);
     if (bytesRead !== 30 || header.readUInt32LE(0) !== 0x04034b50)
       throw invalidXlsx("The XLSX package has a corrupt local ZIP header.");
-    const start = entry.localHeaderOffset + 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
+    const nameLength = header.readUInt16LE(26);
+    const name = Buffer.alloc(nameLength);
+    const nameRead = await handle.read(name, 0, nameLength, entry.localHeaderOffset + 30);
+    // A local header that disagrees with the central directory is a classic
+    // parser-differential trick; refuse it rather than pick a side.
+    if (
+      nameRead.bytesRead !== nameLength ||
+      !name.equals(entry.nameBytes) ||
+      header.readUInt16LE(8) !== entry.method
+    )
+      throw invalidXlsx("The XLSX local ZIP header disagrees with the central directory.");
+    const start = entry.localHeaderOffset + 30 + nameLength + header.readUInt16LE(28);
     if (start + entry.compressedSize > pkg.fileLength)
       throw invalidXlsx("The XLSX ZIP entry extends beyond the end of the file.");
     return start;
